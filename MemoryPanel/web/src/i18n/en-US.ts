@@ -44,7 +44,7 @@ export const enUS = {
   'header.profile.role.member': 'Member',
   'header.profile.role.reviewer': 'Reviewer',
   'header.profile.close': 'Close',
-  'header.brand': 'Memory Hub',
+  'header.brand': 'AI交付智协平台',
 
   // ===== TeamSwitcher =====
   'teamSwitcher.selectTeam': 'Select Team',

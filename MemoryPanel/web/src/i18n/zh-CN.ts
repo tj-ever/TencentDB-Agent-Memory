@@ -44,7 +44,7 @@ export const zhCN = {
   'header.profile.role.member': '普通成员',
   'header.profile.role.reviewer': '审核员',
   'header.profile.close': '关闭',
-  'header.brand': 'Memory Hub',
+  'header.brand': 'AI交付智协平台',
 
   // ===== TeamSwitcher =====
   'teamSwitcher.selectTeam': '选择 team',
