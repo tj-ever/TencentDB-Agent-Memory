@@ -37,6 +37,13 @@ info "═══ Step 3/3: proxy ════════════════
 # 用户可用 PROXY_FULL_STACK=0 关闭；也可在 .env 分别覆盖三个开关。
 PROXY_FULL_STACK="${PROXY_FULL_STACK:-1}" "$SCRIPT_DIR/start-proxy.sh"
 
+# 可选 Step 4：飞书机器人渠道（MemoryBridge，二开组件）。
+# .env 里 BRIDGE_ENABLED=1 开启；镜像本地构建，需要飞书机器人才有意义。
+if [[ "${BRIDGE_ENABLED:-0}" == "1" ]]; then
+  info "═══ Step 4/4: memory-bridge（飞书机器人） ═════════════════"
+  "$SCRIPT_DIR/start-memory-bridge.sh"
+fi
+
 ok "═══ 全部服务已就绪 ═════════════════════════════════════════"
 print_endpoints
 

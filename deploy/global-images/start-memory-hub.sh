@@ -107,6 +107,7 @@ $DOCKER run -d --name "$CONTAINER" \
   -e LLM_BASE_URL="$MEMORY_LLM_BASE_URL" \
   -e LLM_MODEL="$MEMORY_LLM_MODEL" \
   -e KNOWLEDGE_LLM_BINDING_SYNC=0 \
+  -e MEMORY_BRIDGE_URL="${MEMORY_BRIDGE_URL:-http://tdai-memory-bridge:8130}" \
   "$MEMORY_HUB_IMAGE" >/dev/null
 
 wait_healthy "$CONTAINER" 120

@@ -30,6 +30,8 @@ export interface PanelConfig {
     sync: boolean;
     proxyBaseUrl: string;
   };
+  /** custom: Feishu MemoryBridge HTTP API */
+  bridge: { baseUrl: string };
 }
 
 function envBool(key: string, fallback: boolean): boolean {
@@ -61,6 +63,9 @@ export function loadPanelConfig(): PanelConfig {
     knowledgeLlmBinding: {
       sync: envBool('KNOWLEDGE_LLM_BINDING_SYNC', true),
       proxyBaseUrl: env('KNOWLEDGE_LLM_PROXY_BASE_URL', 'http://127.0.0.1:8096'),
+    },
+    bridge: {
+      baseUrl: env('MEMORY_BRIDGE_URL', 'http://127.0.0.1:8130'),
     },
   };
 }

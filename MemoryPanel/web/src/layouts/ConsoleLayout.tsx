@@ -26,6 +26,7 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/team/members': 'team_members',
   '/team/agents': 'team_agents',
   '/team/api-keys': 'api_keys',
+  '/team/feishu-bots': 'feishu_bots',
 };
 
 /** PageId → 路由 path */
