@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu } from 'tea-component';
+import { Layout, Menu, Drawer } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
 import { useCurrentRole, type TeamRole } from '@/services/useCurrentRole';
@@ -27,6 +27,7 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/team/agents': 'team_agents',
   '/team/api-keys': 'api_keys',
   '/team/feishu-bots': 'feishu_bots',
+  '/system/system-config': 'system_config',
 };
 
 /** PageId → 路由 path */
@@ -77,6 +78,8 @@ export function ConsoleLayout() {
   }, [activePage]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 移动端导航抽屉（窄屏隐藏 Sider 后，用顶栏汉堡唤出完整菜单）
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // 首次使用引导：登录后按「每用户仅首次」判定自动弹出
   const currentUserId = auth?.user_id;
@@ -128,6 +131,7 @@ export function ConsoleLayout() {
 
     for (const meta of Object.values(PAGE_META)) {
       if (userRole === 'reviewer' && meta.id === 'team_members') continue;
+      if (meta.id === 'system_config' && userRole !== 'admin') continue;
       const list = byGroup.get(meta.group) ?? [];
       list.push(meta);
       byGroup.set(meta.group, list);
@@ -158,6 +162,23 @@ export function ConsoleLayout() {
     );
   };
 
+  // 抽屉里的菜单：点一项即导航并关闭抽屉
+  const renderMobileMenuItem = (item: (typeof PAGE_META)[PageId]) => {
+    const isActive = activePage === item.id;
+    return (
+      <Menu.Item
+        key={item.id}
+        title={item.label}
+        icon={ITEM_ICON[item.id]}
+        selected={isActive}
+        onClick={() => {
+          navigateTo(item.id);
+          setMobileNavOpen(false);
+        }}
+      />
+    );
+  };
+
   return (
     <div className="_memory-app-shell">
       <OnboardingGuide
@@ -173,7 +194,25 @@ export function ConsoleLayout() {
         instanceName={auth?.instance_name}
         onReplayOnboarding={currentUserId ? handleReplayOnboarding : undefined}
         onLogout={logout}
+        onOpenMobileNav={() => setMobileNavOpen(true)}
       />
+      {/* 移动端导航抽屉：复用侧栏菜单的分组与过滤逻辑，placement=left 左侧滑出 */}
+      <Drawer
+        visible={mobileNavOpen}
+        placement="left"
+        title={t('header.nav.menu')}
+        onClose={() => setMobileNavOpen(false)}
+        destroyOnClose
+      >
+        <Menu>
+          {pinnedGroup?.items.map((item) => renderMobileMenuItem(item))}
+          {restGroups.map((group) => (
+            <Menu.Group key={group.title} title={group.title}>
+              {group.items.map((item) => renderMobileMenuItem(item))}
+            </Menu.Group>
+          ))}
+        </Menu>
+      </Drawer>
       <Layout>
         <Body>
           <Sider>
@@ -206,4 +245,3 @@ export function ConsoleLayout() {
     </div>
   );
 }
- 

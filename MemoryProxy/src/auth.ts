@@ -17,6 +17,8 @@ export type { AuthConfig };
 export interface VerifyUserResult {
   /** User ID if verified successfully; empty string otherwise. */
   userId: string;
+  /** Verified account type, used by management endpoints for admin checks. */
+  userType?: string;
   /** True when auth is enabled and verification did NOT return valid=true. */
   rejected: boolean;
   /** Error detail for logging/response when rejected. */
@@ -96,12 +98,16 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
 
     const body = await resp.json() as {
       code?: number;
-      data?: { valid?: boolean; user?: { user_id?: string } };
+      data?: { valid?: boolean; user?: { user_id?: string; user_type?: string } };
     };
 
     // Only accept: code=0 AND valid=true AND user_id present
     if (body.code === 0 && body.data?.valid === true && body.data.user?.user_id) {
-      return { userId: body.data.user.user_id, rejected: false };
+      return {
+        userId: body.data.user.user_id,
+        userType: body.data.user.user_type,
+        rejected: false,
+      };
     }
 
     // Everything else is a rejection

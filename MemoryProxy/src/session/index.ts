@@ -109,8 +109,12 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
+  serverPreset?: PresetIdentity,
 ): Promise<SessionInitResult> {
-  if (agentSource === "claude-code") {
+  // Anthropic 协议一律走 claude-code 状态机。上游 agent 路径（/dev-fw/）会让
+  // agentSource 变成 dev-fw 而非 claude-code——但底下的注入/宿主都是 Anthropic 语义，
+  // 只有 cc 状态机支持 server-preset（binding）直注册。
+  if (agentSource === "claude-code" || reqCtx.protocol === "anthropic") {
     return ccHandle(
       sessionKey, userId, messages, config, store,
       // 直接透传整个 reqCtx，避免手抠字段时把新加字段（如 codex 的
@@ -127,6 +131,8 @@ export async function handleSessionInit(
       userKey,
       spaceId,
       presetIdentity,
+      serverPreset,
+      agentSource,
     );
   }
   // 同上：整个 reqCtx 透传给 CB 状态机。codexHandler 会把 body.input[] 塞在

@@ -3,10 +3,13 @@
 import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { CostGuardConfig, ProxyConfig, RawYamlConfig } from "./types.js";
+import { parseUpstreamAgents } from "./custom/upstream.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
 export const DEFAULT_CONFIG: ProxyConfig = {
+  configPath: "config.yaml",
+  overridePath: "",
   server: { host: "0.0.0.0", port: 8096, forwardTimeoutMs: 600_000 },
   upstream: { url: DEFAULT_UPSTREAM, apiKey: "", agents: {} },
   log: {
@@ -232,38 +235,24 @@ function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
 }
 
 /**
- * Parse `upstream.agents` from raw YAML into the normalized `AgentUpstreamEntry`
- * map. Entries without a non-empty `url` are silently dropped — an empty url
- * would just fall back to the global upstream, so keeping the entry adds only
- * noise (and would make "did I configure this right?" harder to answer at
- * a glance).
- */
-function parseUpstreamAgents(
-  raw: Record<string, { url?: string; apiKey?: string } | null | undefined> | undefined,
-): Record<string, { url: string; apiKey?: string }> {
-  if (!raw || typeof raw !== "object") return {};
-  const out: Record<string, { url: string; apiKey?: string }> = {};
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== "object") continue;
-    const url = (entry as { url?: unknown }).url;
-    if (typeof url !== "string" || url.length === 0) continue;
-    const apiKey = (entry as { apiKey?: unknown }).apiKey;
-    out[name] = typeof apiKey === "string" && apiKey.length > 0
-      ? { url, apiKey }
-      : { url };
-  }
-  return out;
-}
-
-/**
  * Build the final ProxyConfig.
- * Priority (high → low): CLI overrides > YAML config file > defaults.
+ * Priority (high → low): CLI overrides > runtime upstream override > YAML config file > defaults.
  */
 export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
   const configPath = overrides.configFile || "config.yaml";
-  const yaml = loadYamlConfig(configPath);
+  let yaml = loadYamlConfig(configPath);
+  // 运行期上游配置优先于主配置，主配置文件可以保持只读。
+  const overridePath = (process.env.PROXY_OVERRIDE_CONFIG || "").trim();
+  if (overridePath) {
+    const ov = loadYamlConfig(overridePath);
+    if (ov.upstream) {
+      yaml = { ...yaml, upstream: { ...(yaml.upstream ?? {}), ...ov.upstream } };
+    }
+  }
 
   return {
+    configPath,
+    overridePath,
     server: {
       host: overrides.host ?? yaml.server?.host ?? DEFAULT_CONFIG.server.host,
       port: overrides.port ?? yaml.server?.port ?? DEFAULT_CONFIG.server.port,
@@ -277,6 +266,8 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         yaml.upstream?.url ??
         DEFAULT_CONFIG.upstream.url,
       apiKey: yaml.upstream?.apiKey ?? DEFAULT_CONFIG.upstream.apiKey,
+      model: typeof yaml.upstream?.model === "string" ? yaml.upstream.model : undefined,
+      supportsImages: yaml.upstream?.supportsImages === true,
       agents: parseUpstreamAgents(yaml.upstream?.agents),
     },
     log: {

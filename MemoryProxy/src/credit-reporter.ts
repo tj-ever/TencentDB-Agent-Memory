@@ -59,11 +59,12 @@ export function detectUsageProtocol(upstreamUrl: string): "anthropic" | "openai"
  * - Rejects empty spaceId (`/proxy//...`), case mismatches (`/PROXY/...`),
  *   and similar-but-distinct prefixes (`/proxyfake/...`).
  *
+ * @param knownAgents Optional configured URL-prefix agents such as `fw1`.
  * @returns The spaceId string, or `null` when the path does not match the
  *   expected prefix. Callers should treat `null` as "do not report credit
  *   for this request".
  */
-export function extractSpaceIdFromPath(path: string): string | null {
+export function extractSpaceIdFromPath(path: string, knownAgents?: ReadonlySet<string>): string | null {
   // Defensive: drop query string if accidentally passed in.
   const safePath = path.split("?", 1)[0] ?? "";
   // /proxy/<spaceId>/...
@@ -74,7 +75,7 @@ export function extractSpaceIdFromPath(path: string): string | null {
   if (match) {
     const agent = safePath.split("/").filter(Boolean)[0] ?? "";
     // Only capture spaceId when the first segment looks like an agent name
-    if (/^(claude-code|codebuddy|codex|cursor|hermes|openclaw|workbuddy|dsh)$/i.test(agent)) {
+    if (/^(claude-code|codebuddy|codex|cursor|hermes|openclaw|workbuddy|dsh)$/i.test(agent) || knownAgents?.has(agent)) {
       return match[1] || null;
     }
   }
@@ -298,6 +299,7 @@ export async function tryReportCreditFromPath(
    * Defaults to `"usage"` semantically when omitted (backward compatible).
    */
   event?: "usage" | "analyzer_usage",
+  spaceIdOverride?: string,
 ): Promise<CreditReportOutcome> {
   // Defense-in-depth: extension telemetry events must never trigger a credit report.
   // Today the extension telemetry path (writeLog with event="analyzer_usage") does not
@@ -307,7 +309,7 @@ export async function tryReportCreditFromPath(
     return { attempted: false, ok: false };
   }
 
-  const spaceId = extractSpaceIdFromPath(path);
+  const spaceId = spaceIdOverride || extractSpaceIdFromPath(path);
   if (!spaceId || !usage || Object.keys(usage).length === 0) {
     return { attempted: false, ok: false };
   }

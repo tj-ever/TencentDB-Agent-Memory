@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { listBots, getBot, createBot, updateBot, deleteBot, publicBot, type Bot, type BotInput } from './store.js';
-import { startBot, stopBot, statusOf } from './runtime.js';
+import { startBot, stopBot, statusOf, getBotSessionState, abortBotTask, clearBotSession } from './runtime.js';
 
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
@@ -59,6 +59,9 @@ export function createBridgeServer() {
 
       const one = pathname.match(/^\/api\/bots\/([^/]+)$/);
       const action = pathname.match(/^\/api\/bots\/([^/]+)\/(start|stop)$/);
+      const sessions = pathname.match(/^\/api\/bots\/([^/]+)\/sessions$/);
+      const clearSession = pathname.match(/^\/api\/bots\/([^/]+)\/sessions\/([^/]+)\/clear$/);
+      const abort = pathname.match(/^\/api\/bots\/([^/]+)\/abort$/);
 
       if (req.method === 'POST' && pathname === '/api/bots') {
         const bot = createBot(await readBody(req) as BotInput);
@@ -91,6 +94,25 @@ export function createBridgeServer() {
         if (action[2] === 'start') await startBot(id);
         else await stopBot(id);
         return envelope(res, 200, 0, 'ok', view(getBot(id)!));
+      }
+
+      // ── 会话管理（面板）──────────────────────────────────────────
+      if (sessions && req.method === 'GET') {
+        const id = decodeURIComponent(sessions[1]!);
+        if (!getBot(id)) return envelope(res, 404, 404, 'BOT_NOT_FOUND', null);
+        return envelope(res, 200, 0, 'ok', getBotSessionState(id));
+      }
+      if (clearSession && req.method === 'POST') {
+        const [, id, sid] = clearSession;
+        const botId = decodeURIComponent(id!);
+        if (!getBot(botId)) return envelope(res, 404, 404, 'BOT_NOT_FOUND', null);
+        const ok = clearBotSession(botId, decodeURIComponent(sid!));
+        return envelope(res, 200, 0, 'ok', { ok, sessionId: decodeURIComponent(sid!) });
+      }
+      if (abort && req.method === 'POST') {
+        const botId = decodeURIComponent(abort[1]!);
+        if (!getBot(botId)) return envelope(res, 404, 404, 'BOT_NOT_FOUND', null);
+        return envelope(res, 200, 0, 'ok', { ok: abortBotTask(botId) });
       }
 
       envelope(res, 404, 404, 'NOT_FOUND', null);

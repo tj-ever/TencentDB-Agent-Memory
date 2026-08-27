@@ -24,6 +24,16 @@ BRIDGE_DATA_VOLUME="${BRIDGE_DATA_VOLUME:-tdai-memory-bridge-data}"
 BRIDGE_WORKSPACES_VOLUME="${BRIDGE_WORKSPACES_VOLUME:-tdai-memory-bridge-workspaces}"
 BRIDGE_SESSIONS_VOLUME="${BRIDGE_SESSIONS_VOLUME:-tdai-memory-bridge-sessions}"
 
+# 新部署默认复用 memory-core 初始化生成的管理员 user_key；显式环境变量优先。
+if [[ -z "${BRIDGE_USER_KEY_DEFAULT:-}" ]]; then
+  ADMIN_KEY_FILE="${MEMORY_CORE_ADMIN_KEY_FILE:-$SCRIPT_DIR/.admin-key}"
+  if [[ -s "$ADMIN_KEY_FILE" ]]; then
+    BRIDGE_USER_KEY_DEFAULT="$(<"$ADMIN_KEY_FILE")"
+  else
+    die "缺少 BRIDGE_USER_KEY_DEFAULT，且未找到 ${ADMIN_KEY_FILE}。请先启动 memory-core 或显式配置该变量。"
+  fi
+fi
+
 if ! $DOCKER network inspect "$NETWORK" >/dev/null 2>&1; then
   info "创建 docker 网络 $NETWORK"
   $DOCKER network create "$NETWORK" >/dev/null
@@ -35,7 +45,7 @@ if ! $DOCKER ps --format '{{.Names}}' 2>/dev/null | grep -qx "tdai-proxy"; then
 fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  info "构建镜像 ${BRIDGE_IMAGE}（首次较慢：下载 claude CLI + headless-shell）"
+  info "构建镜像 ${BRIDGE_IMAGE}（首次较慢：安装 claude CLI + Chromium）"
   $DOCKER build -t "$BRIDGE_IMAGE" "$SCRIPT_DIR/../../MemoryBridge" || die "构建 $BRIDGE_IMAGE 失败。"
 fi
 
@@ -59,6 +69,7 @@ $DOCKER run -d --name "$CONTAINER" \
   -v "${BRIDGE_DATA_VOLUME}:/app/data" \
   -v "${BRIDGE_WORKSPACES_VOLUME}:/app/workspaces" \
   -v "${BRIDGE_SESSIONS_VOLUME}:/home/node/.claude" \
+  -e BRIDGE_USER_KEY_DEFAULT="$BRIDGE_USER_KEY_DEFAULT" \
   "$BRIDGE_IMAGE" >/dev/null
 
 wait_healthy "$CONTAINER" 90

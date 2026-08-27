@@ -123,6 +123,11 @@
   color: var(--tea-color-text-primary);
 }
 
+/* 移动端汉堡导航按钮：桌面默认隐藏，窄屏由 tea-override.css 媒体查询置为 inline-flex */
+._memory-mobile-nav-btn {
+  display: none;
+}
+
 /* ===== Profile Modal：tea Avatar + Justify + 描述型分块 ===== */
 
 ._memory-profile-identity {

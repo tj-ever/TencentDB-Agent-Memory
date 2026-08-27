@@ -11,6 +11,7 @@ import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
 import { createMemoryBridgeHandler } from "./memory/memory-bridge.js";
 import { createInstanceDestroyHandler } from "./routes/instance-destroy.js";
 import { createRateLimitHandlers } from "./routes/rate-limits.js";
+import { createUpstreamConfigHandlers } from "./custom/routes/upstream-config.js";
 import { hasAnalyseMarker, hasCostGuardMarker } from "./routes/whitelist.js";
 import { tryActivateStorage, tryActivateRedis } from "./injection/index.js";
 import { getEffectiveBackend } from "./storage/factory.js";
@@ -142,6 +143,11 @@ export function createApp(config: ProxyConfig): Hono {
   app.get("/v3/admin/rate-limits", rateLimitHandlers.get);
   app.put("/v3/admin/rate-limits", rateLimitHandlers.put);
   app.delete("/v3/admin/rate-limits", rateLimitHandlers.delete);
+
+  // ── Proxy 上游运行时配置（面板「Proxy 上游配置」卡片）──
+  const upstreamHandlers = createUpstreamConfigHandlers(config);
+  app.get("/v3/config/upstream", upstreamHandlers.get);
+  app.put("/v3/config/upstream", upstreamHandlers.put);
 
   // ── Session management endpoints (mem: command 底层接口, 面板前端可复用) ──
   app.post("/v3/session/refresh-cache", (c) => {

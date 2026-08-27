@@ -8,7 +8,7 @@
 #   ./start-all.sh            # 本地已有镜像就直接用
 #   PULL=1 ./start-all.sh     # 先 docker pull 三个镜像，升级到最新 latest
 #
-# 前置：cp .env.example .env 并把两组 LLM 参数填好（REPLACE_ME → 真值）。
+# 前置：cp .env.example .env 并填写 memory 服务启动参数和 Proxy 上游参数。
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,7 +37,7 @@ info "═══ Step 3/3: proxy ════════════════
 # 用户可用 PROXY_FULL_STACK=0 关闭；也可在 .env 分别覆盖三个开关。
 PROXY_FULL_STACK="${PROXY_FULL_STACK:-1}" "$SCRIPT_DIR/start-proxy.sh"
 
-# 可选 Step 4：飞书机器人渠道（MemoryBridge，二开组件）。
+# 可选 Step 4：飞书机器人渠道（MemoryBridge）。
 # .env 里 BRIDGE_ENABLED=1 开启；镜像本地构建，需要飞书机器人才有意义。
 if [[ "${BRIDGE_ENABLED:-0}" == "1" ]]; then
   info "═══ Step 4/4: memory-bridge（飞书机器人） ═════════════════"

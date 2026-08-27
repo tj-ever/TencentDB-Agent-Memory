@@ -14,6 +14,7 @@ import {
   CodeIcon,
   ToolsIcon,
   ChatIcon,
+  SettingIcon,
 } from 'tea-icons-react';
 
 export type PageId =
@@ -25,7 +26,8 @@ export type PageId =
   | 'team_members'
   | 'team_agents'
   | 'api_keys'
-  | 'feishu_bots';
+  | 'feishu_bots'
+  | 'system_config';
 
 /** 页面元数据 */
 export interface PageMeta {
@@ -53,11 +55,12 @@ export function usePageMeta(): Record<PageId, PageMeta> {
     team_agents:     { id: 'team_agents',     label: t('menu.team_agents'), desc: t('menu.desc.team_agents'), group: t('menu.group.organization'), order: 1 },
     api_keys:        { id: 'api_keys',        label: t('menu.api_keys'), desc: t('menu.desc.api_keys'), group: t('menu.group.organization'), order: 2 },
     feishu_bots:     { id: 'feishu_bots',     label: t('menu.feishu_bots'), desc: t('menu.desc.feishu_bots'), group: t('menu.group.organization'), order: 3 },
+    system_config:   { id: 'system_config',   label: t('menu.system_config'), desc: t('menu.desc.system_config'), group: t('menu.group.system'), order: 0 },
   };
 }
 
 /** 分组排序顺序 */
-export const GROUP_ORDER_KEYS = ['workbench', 'organization', 'assets'] as const;
+export const GROUP_ORDER_KEYS = ['workbench', 'organization', 'assets', 'system'] as const;
 
 /** 每个页面在侧边栏菜单中的图标（Tea 官方图标，size 16） */
 export const ITEM_ICON: Record<PageId, JSX.Element> = {
@@ -70,6 +73,7 @@ export const ITEM_ICON: Record<PageId, JSX.Element> = {
   skills: <ToolsIcon size={16} />,
   chat_memory: <ChatIcon size={16} />,
   feishu_bots: <ChatIcon size={16} />,
+  system_config: <SettingIcon size={16} />,
 };
 
 /** 分组图标（工作台 / 组织与权限 / 资产管理） */
@@ -97,4 +101,5 @@ export const GROUP_ICON: Record<string, JSX.Element> = {
       <path d="M3 17l9 5 9-5" />
     </svg>
   ),
+  system: <SettingIcon size={16} />,
 };

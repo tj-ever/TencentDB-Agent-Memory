@@ -1,6 +1,6 @@
 # MemoryProxy
 
-MemoryProxy 是一个**透明的 LLM 请求代理**：把编码 Agent（Claude Code / CodeBuddy 等）原本直连大模型的请求，改为先经过它中转。它在转发前后自动完成会话初始化、记忆注入、对话回流等动作，让 Agent **无需改动一行代码**就能用上 [MemoryCore](../MemoryCore/README_CN.md) 提供的团队记忆、Skill 和 Knowledge。
+MemoryProxy 是一个**透明的 LLM 请求代理**：编码 Agent（Claude Code / CodeBuddy 等）通过它访问大模型。它在转发前后自动完成会话初始化、记忆注入、对话回流等动作，让 Agent **无需改动一行代码**就能用上 [MemoryCore](../MemoryCore/README_CN.md) 提供的团队记忆、Skill 和 Knowledge。
 
 对客户端和上游模型来说，它是“透明”的——不改变任何协议，原样转发 OpenAI `/v1/chat/completions` 和 Anthropic `/v1/messages`，只是在中转的这一进一出里，顺手做了这些事：**会话初始化、上下文注入、对话回流、鉴权与用量上报**。
 
@@ -27,13 +27,13 @@ MemoryProxy 是一个**透明的 LLM 请求代理**：把编码 Agent（Claude C
 - **会话初始化**：首次对话时拦截请求，通过交互式表单引导用户选择 team → agent → task，完成后把 agent/task 上下文注入 system prompt。支持从请求头（`x-team-id` / `x-agent-id` / `x-task-id`）自动预选。
 - **上下文注入**：把 Skill、Knowledge、Memory L2/L3 等按需注入 system prompt；L0/L1 通过只读工具接口暴露给模型主动查询，避免破坏上游 KV cache。
 - **对话回流（提取）**：每轮真人对话结束时，把对话切片同步发到 MemoryCore `/v3/skill/conversation/add`（Skill 归档）并写入 L0 短期记忆，供 core 侧后台抽取。
-- **鉴权与身份**：调用 MemoryCore `POST /v3/meta/auth/verify` 校验 `x-tdai-user-key`，解析出 `user_id` 作为全链路用户标识；`spaceId`（memory 实例 id）从 `/proxy/<spaceId>/...` 路径自动提取。
+- **鉴权与身份**：调用 MemoryCore `POST /v3/meta/auth/verify` 校验 `x-tdai-user-key`，解析出 `user_id` 作为全链路用户标识；`spaceId`（memory 实例 id）从 `/proxy/<spaceId>/...`、内置 Agent 或已配置 Agent 路径提取。
 - **系统用户短路透传**：内部服务账号（如 memory / wiki 内部调用）命中后跳过 session init 和注入，只做透明转发 + 计费。
 - **Skill Bridge / Memory Bridge**：反向代理 MemoryCore 的 skill / memory HTTP 工具，转发时注入 `serviceToken`，避免凭据出现在 LLM 可见的 prompt 中。
 - **统一存储抽象（ProxyStorage）**：会话初始化状态、注入缓存与 Skill 状态（`inj:*` / `sk:*` / `vpin:*`）支持 Redis、COS（kernel-sts）、SQLite、FS、Memory 五种后端，多节点部署首选 COS。
 - **Input TPM / QPM 限流**：按 `spaceId × 最终模型` 在 Redis 上做 60 秒滑动窗口限流，可通过 `/v3/admin/rate-limits` 动态调整。
 - **可观测与用量上报**：Opik trace、Langfuse（一个 trace = 一个 turn）、ClickHouse（按 turn 记录 token 明细）三路互相独立，任一失败不影响业务。
-- **Credit 计费上报**：每次上游响应完成后按定价表计算 CreditDelta 上报到计费服务；仅识别路径带 `/proxy/<spaceId>/` 的请求。
+- **Credit 计费上报**：每次上游响应完成后按定价表计算 CreditDelta 上报到计费服务；`/proxy/<spaceId>/`、内置 Agent 和已配置 Agent 路径使用对应 `spaceId` 归属用量。
 - **多节点部署**：结合外部 gateway 与 COS 后端支持多实例水平扩展；`/skill-bridge` 与 `/memory-bridge` 前缀由 gateway 原样透传到 proxy 实例。
 
 ## 请求处理流程
@@ -99,7 +99,7 @@ cp config.example.yaml config.yaml
 
 至少需要确认这几项：
 
-- `upstream.url` / `upstream.apiKey` —— 上游 LLM 地址与凭据
+- `upstream.url` / `upstream.apiKey` —— 上游 LLM 地址与全局凭据（**Key 分离**：命中 agent 配置时模型 Key 一律由调用方透传，proxy 不再配置/替换任何 agent 级 Key；见下文「客户端配置」与「自定义 Agent 上游」）
 - `auth.url` / `tdai.endpoint` / `skill.endpoint` —— 指向你的 MemoryCore Gateway（默认 `http://127.0.0.1:8420`）
 
 > **本地无 Redis 快速跑通**：示例配置默认 `redis.enabled: true`，本机没起 Redis 时会持续刷 `ECONNREFUSED 127.0.0.1:6379`。纯本地开发建议改为 `redis.enabled: false` + `storage.enabled: true`（`storage.backend: sqlite`），会话/注入/Skill 状态改走本地 SQLite，启动即干净。
@@ -163,14 +163,32 @@ npm run dev:config
 
 ## 客户端配置
 
-把编码 Agent 的上游地址指向本代理，其余字段（`apiKey`、`model` 等）保持不变。请求路径推荐带上 `spaceId`（memory 实例 id），proxy 会自动提取用于鉴权、注入与计费。
+编码 Agent 把上游地址指向本代理。**模型 Key 与记忆 Key 分离**：
+
+- **模型 Key**（`ANTHROPIC_AUTH_TOKEN` / OpenAI 的 `apiKey`）：开发者填**自己的模型提供方 Key**，proxy 原样透传给上游，不做替换。命中 agent 配置时全局 `upstream.apiKey` 不会参与。
+- **记忆 Key**（`x-tdai-user-key` 请求头）：独立携带腾讯记忆身份，用于 `user_id` 鉴权、记忆注入与计费。调用者必须是所绑定 Team 的 active member。
+
+请求路径推荐带上 `spaceId`（memory 实例 id），proxy 会自动提取用于鉴权、注入与计费。
+
+Claude Code 接入（路径为 `/proxy/...` 通用形式；配了「开发者上游」时走 `/<agentName>/default`，见下文）：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8096/proxy/<spaceId>",
+    "ANTHROPIC_AUTH_TOKEN": "<你的模型提供方 Key>",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-tdai-user-key: <你的腾讯 Mem 用户 Key>"
+  }
+}
+```
 
 OpenAI 兼容客户端：
 
 ```json
 {
-  "apiKey": "sk-mem-xxx",
-  "url": "http://localhost:8096/proxy/<spaceId>/v1/chat/completions"
+  "apiKey": "<你的模型提供方 Key>",
+  "url": "http://localhost:8096/proxy/<spaceId>/v1/chat/completions",
+  "headers": { "x-tdai-user-key": "<你的腾讯 Mem 用户 Key>" }
 }
 ```
 
@@ -178,10 +196,13 @@ Anthropic Messages 客户端：
 
 ```json
 {
-  "apiKey": "sk-mem-xxx",
-  "url": "http://localhost:8096/proxy/<spaceId>/v1/messages"
+  "apiKey": "<你的模型提供方 Key>",
+  "url": "http://localhost:8096/proxy/<spaceId>/v1/messages",
+  "headers": { "x-tdai-user-key": "<你的腾讯 Mem 用户 Key>" }
 }
 ```
+
+> OpenTelemetry / 网关层如需做可观测关联，`x-tdai-user-key` 参与日志色散与计费归属，不要复用模型 Key 充当记忆身份。
 
 ## 主要 HTTP 端点
 
@@ -200,14 +221,14 @@ Anthropic Messages 客户端：
 
 ## 配置说明
 
-完整带注释的示例见 [`config.example.yaml`](./config.example.yaml)。配置优先级：**CLI 参数 > YAML 配置文件 > 内置默认值**。
+完整带注释的示例见 [`config.example.yaml`](./config.example.yaml)。配置优先级：**CLI 参数 > 运行期上游 override > YAML 配置文件 > 内置默认值**。override 只覆盖 `upstream` 段。
 
 各配置段速览：
 
 | 段 | 作用 |
 | --- | --- |
 | `server` | 监听 host / port、上游转发超时 |
-| `upstream` | 默认上游 URL 与全局 `apiKey`（非空则替换转发请求鉴权） |
+| `upstream` | 默认上游 URL、全局 `apiKey`、默认模型、图片能力和 Agent 上游映射（v4.3+：模型 Key 与记忆 Key 分离，agent 级不再配置 Key） |
 | `log` | 日志目录、级别、后端与轮转策略 |
 | `redis` | 会话 / 注入 / Skill 状态默认后端；不启用 `storage.enabled` 时使用 |
 | `storage` | 统一存储抽象（`cos` / `sqlite` / `fs` / `memory`），多节点部署首选 `cos` |
@@ -224,9 +245,39 @@ Anthropic Messages 客户端：
 | `rateLimit` | Memory 实例 × 实际模型的 Input TPM / QPM 限流 |
 | `clickhouse` | 按 turn 的用量上报（计费数据源） |
 | `creditReport` / `creditPricing` | Credit 计费上报与定价表 |
-| `upstream.agents` | 按 agent name 覆盖上游 URL + apiKey（如 `claude-code` 单独走 CCR） |
+| `upstream.agents` | 按 agent name 覆盖上游 URL（v4.3+ 仅做 URL 分流，模型 Key 一律透传，不再配置 agent 级 apiKey；记忆身份通过 `x-tdai-user-key` 独立携带） |
 
 > `injection`、`extraction`、`sessionInit`、`tdai`、`skill`、`knowledge`、`skillRuntime` 是与“记忆”直接相关的配置段，接入时优先关注它们。
+
+### 自定义 Agent 上游
+
+运行期配置接口由面板“系统 → 系统配置”调用：
+
+- `GET /v3/config/upstream`：返回全局上游和 Agent 上游，API key 以掩码返回。
+- `PUT /v3/config/upstream`：更新全局 URL、key、模型、`supportsImages` 及 Agent 列表。
+- 接口要求 `x-tdai-service-id`、`x-tdai-user-key`；写操作要求已启用鉴权且调用者为 `system_admin`。
+- 设置 `PROXY_OVERRIDE_CONFIG` 时，更新原子写入该文件，主 YAML 可以只读挂载。
+
+Agent 条目包含 `url`、可选 `model` 和可选 `binding`（**v4.3+ 不再配置 agent 级 apiKey**）：
+
+```yaml
+upstream:
+  url: https://provider.example/v1
+  apiKey: sk-global
+  model: provider-model
+  supportsImages: false
+  agents:
+    fw1:
+      url: https://developer.example/v1
+      model: developer-model
+      binding:
+        team_id: team_xxx
+        agent_id: agent_xxx
+```
+
+请求使用 `/fw1/<spaceId>/v1/...` 时，Proxy 采用 `fw1` 的 URL 和模型，**模型 Key 一律透传客户端的原始凭据**（不再做服务端替换）。配置了 `binding` 的 Agent 会先校验调用者是否为绑定 Team 的 active member（使用 `x-tdai-user-key` 作为记忆身份），之后将该 binding 作为可信会话上下文。
+
+模型优先级为 Agent `model` > 全局 `upstream.model` > 客户端请求模型。Proxy 会移除模型名末尾的 `[... ]` 计费标记。`supportsImages=false` 时仅从 Anthropic/OpenAI 的明确消息内容块中移除图片块。
 
 ### 常用环境变量
 
@@ -296,6 +347,11 @@ MemoryProxy/
     db/                               会话 / 注入 / Skill 状态持久化 Repo
     rate-limit/                       Input TPM / QPM 限流
     routes/                           管理端点（admin-auth / instance-destroy / rate-limits）
+    custom/                           自定义 Agent 路由、上游配置、可信 binding、图片策略
+      upstream.ts                     Agent/space 路径解析与 Team active member 校验
+      request-body.ts                 不支持图片时剥离图片内容块
+      session-preset.ts               将可信 binding 转换为会话初始化状态
+      routes/upstream-config.ts       /v3/config/upstream GET/PUT
     clickhouse.ts / langfuse.ts / opik.ts  三路可观测上报
     credit-reporter.ts / pricing.ts   Credit 计费上报与定价
     report/ / logger.ts               结构化日志系统与 JSONL 用量日志

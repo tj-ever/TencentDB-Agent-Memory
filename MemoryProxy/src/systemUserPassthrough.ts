@@ -47,6 +47,8 @@ import { log } from "./report/log.js";
 import { joinUrl } from "./guard-adapter.js";
 import { extractSpaceIdFromPath, tryReportCreditFromPath } from "./credit-reporter.js";
 import { extractSseUsage } from "./handler.js";
+import { stripUnsupportedImages } from "./custom/request-body.js";
+import { resolveUpstreamRoute } from "./custom/upstream.js";
 import {
   opikCreateTrace,
   opikCreateLlmSpan,
@@ -253,6 +255,7 @@ async function recordTracesAndUsage(params: {
       modelId,
       upstreamUrl,
       "usage",
+      spaceId,
     );
     if (outcome.attempted && !outcome.ok) {
       log.warn("systemUser.credit_report_failed", {
@@ -468,8 +471,9 @@ export async function handleSystemUserPassthrough(
   const startTime = new Date().toISOString();
   const traceId = uuidv7();
   const path = c.req.path;
-  const upstreamUrl = joinUrl(config.upstream.url, path);
-  const spaceId = extractSpaceIdFromPath(path) ?? "";
+  const route = resolveUpstreamRoute(config, path);
+  const upstreamUrl = joinUrl(route.url, path);
+  const spaceId = route.spaceId || extractSpaceIdFromPath(path) || "";
 
   // Two body-forwarding paths (see file header). We normalise both to
   // `ArrayBuffer` so `fetch({body})` accepts them without a type-union
@@ -494,6 +498,22 @@ export async function handleSystemUserPassthrough(
     rawBody = await c.req.arrayBuffer();
     bodyTextForTrace = new TextDecoder().decode(rawBody);
     bodyObj = tryParseJson(bodyTextForTrace);
+  }
+  if (bodyObj) {
+    const modelChanged = !!route.model && bodyObj.model !== route.model;
+    if (route.model) bodyObj.model = route.model;
+    const removedImages = stripUnsupportedImages(bodyObj, config.upstream.supportsImages);
+    const changed = modelChanged || removedImages > 0;
+    if (changed) {
+      // forward 用下方 `rawBody`（在改写前已编码），改 bodyObj 不会同步到那些字节，
+      // 必须重新编码，否则上游仍收到旧 model / 旧图片。
+      const updated = new TextEncoder().encode(JSON.stringify(bodyObj));
+      rawBody = updated.buffer.slice(
+        updated.byteOffset,
+        updated.byteOffset + updated.byteLength,
+      ) as ArrayBuffer;
+      bodyTextForTrace = new TextDecoder().decode(rawBody);
+    }
   }
   const modelId = readModelId(bodyObj);
   const requestPayload: unknown = bodyObj ?? bodyTextForTrace;

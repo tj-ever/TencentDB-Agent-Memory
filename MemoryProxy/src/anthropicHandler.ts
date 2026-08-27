@@ -40,6 +40,13 @@ import { writeFailedReportRaw } from "./clickhouse.js";
 import { verifyUserKey } from "./auth.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "./systemUser.js";
 import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
+import { stripUnsupportedImages } from "./custom/request-body.js";
+import {
+  isAgentBindingAuthorized,
+  resolveMemoryIdentity,
+  resolveUpstreamRoute,
+  trustedPreset,
+} from "./custom/upstream.js";
 import { TdaiClient } from "./tdai/client.js";
 import { deriveTdaiIdentity } from "./tdai/identity.js";
 import { extractLatestUserMessage, recordTdaiTurn } from "./tdai/recorder.js";
@@ -533,10 +540,24 @@ export async function handleAnthropicMessages(
   // parsing or the alias-gate. `earlyVerify.userId` is reused later for
   // both the systemUser short-circuit and the normal pipeline.
   const earlyApiKey = extractApiKey(c);
-  const earlySpaceId = extractSpaceIdFromPath(c.req.path) ?? "";
-  const earlyVerify = await verifyUserKey(earlyApiKey, earlySpaceId);
+  // 记忆身份：命中带 memory 配置的绑定 agent 时用 agent 固定记忆账号覆盖调用方；
+  // 否则回退 x-tdai-user-key / 模型 Key。模型 Key 始终仅用于上游 LLM 认证。
+  const upstreamRoute = resolveUpstreamRoute(config, c.req.path);
+  const pathSpaceId = upstreamRoute.spaceId || extractSpaceIdFromPath(c.req.path) || "";
+  const earlyMemoryIdentity = resolveMemoryIdentity(
+    upstreamRoute,
+    c.req.header("x-tdai-user-key"),
+    earlyApiKey,
+    pathSpaceId,
+  );
+  const earlyMemoryKey = earlyMemoryIdentity.memoryKey;
+  const earlySpaceId = earlyMemoryIdentity.spaceId;
+  const earlyVerify = await verifyUserKey(earlyMemoryKey, earlySpaceId);
   if (earlyVerify.rejected) {
     return c.json({ type: "error", error: { type: "authentication_error", message: `Authentication failed: ${earlyVerify.rejectReason ?? "unknown"}` } }, 401);
+  }
+  if (!(await isAgentBindingAuthorized(upstreamRoute, earlyMemoryKey, earlyVerify.userId, config))) {
+    return c.json({ type: "error", error: { type: "permission_error", message: "Agent upstream access denied" } }, 403);
   }
 
   // ── Parse body ──────────────────────────────────────────────────────────
@@ -550,7 +571,6 @@ export async function handleAnthropicMessages(
   } catch {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
-
   // ── CC request classification (feature-gated, per-agent) ─────────────────
   // 通过 agentAdapter 分类请求 —— 每个客户端有自己的规则：
   //   - claude-code: 按 cache_control marker + tools/thinking 三分
@@ -558,11 +578,7 @@ export async function handleAnthropicMessages(
   //
   // 关闭 ccRequestRouting.enabled 时强制视为 main，走完全等价现状的老链路。
   // 详见 docs/design/2026-07-30-cc-request-routing-plan.md
-  const _pathPartsEarly = c.req.path.split("/").filter(Boolean);
-  const _agentFromPathEarly = _pathPartsEarly[0]
-    && !["v1", "proxy", "skill-bridge", "memory-bridge"].includes(_pathPartsEarly[0])
-    ? _pathPartsEarly[0] : undefined;
-  const agentAdapter = resolveAgentAdapter(_agentFromPathEarly ?? "claude-code");
+  const agentAdapter = resolveAgentAdapter(upstreamRoute.agentSource);
   const ccRoutingEnabled = config.ccRequestRouting?.enabled === true;
   const requestKind: CcRequestKind = ccRoutingEnabled ? agentAdapter.classifyRequest(body) : "main";
 
@@ -575,7 +591,7 @@ export async function handleAnthropicMessages(
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
   const requestedModel = typeof body.model === "string" ? body.model : "unknown";
-  if (!isModelInPricing(config.creditPricing, requestedModel)) {
+  if (!upstreamRoute.model && !isModelInPricing(config.creditPricing, requestedModel)) {
     return c.json(
       {
         type: "error",
@@ -593,9 +609,10 @@ export async function handleAnthropicMessages(
   // resolve it back to the real upstream model_id (e.g. "ep-pksklwtb") BEFORE
   // routing / logging / forwarding, so model_id stays the canonical identity
   // across the whole pipeline. No-op when `model` is already a real id/unknown.
-  const modelId = resolveModelId(config.creditPricing, requestedModel);
+  // 服务端上游模型不受客户端展示名校验约束。
+  const modelId = upstreamRoute.model ?? resolveModelId(config.creditPricing, requestedModel);
   const modelAliasApplied = typeof body.model === "string" && modelId !== requestedModel;
-  if (modelAliasApplied) body.model = modelId;
+  if (upstreamRoute.model || modelAliasApplied) body.model = modelId;
 
   // ── System-user short-circuit ────────────────────────────────────────────
   // Internal service accounts (see `systemUsers` config) bypass the entire
@@ -619,10 +636,8 @@ export async function handleAnthropicMessages(
   let hasTools = Array.isArray(body.tools) && body.tools.length > 0;
 
   // ── Resolve agent source from URL path (e.g. /claude-code/v1/messages) ──
-  const pathParts = c.req.path.split("/").filter(Boolean);
-  const agentFromPath = pathParts[0] && !["v1", "proxy", "skill-bridge", "memory-bridge"].includes(pathParts[0])
-    ? pathParts[0] : undefined;
-  const agentSource = agentFromPath ?? "claude-code";
+  const agentFromPath = upstreamRoute.agentName;
+  const agentSource = upstreamRoute.agentSource;
 
   // ── Identity inspection ──────────────────────────────────────────────────
   const reqHeaders: Record<string, string> = {};
@@ -634,6 +649,9 @@ export async function handleAnthropicMessages(
   // ── Resolve apiKey → project name ──────────────────────────────────────
   const apiKey = extractApiKey(c);
   let keyId = apiKey ? apiKeyToKeyId(apiKey) : "unknown";
+  // 记忆身份 Key（x-tdai-user-key）优先于模型 Key，用于 kernel /v3/meta/* 鉴权
+  // 及 memory command 执行。记忆身份 key 已在早期段解析（agent 固定账号或调用方 header）。
+  const memoryKey = earlyMemoryIdentity.memoryKey;
 
   // ── Lowercased headers for agent profile detection + session key ──────────
   const lcHeaders: Record<string, string> = {};
@@ -658,8 +676,9 @@ export async function handleAnthropicMessages(
     || "";
   if (userId) keyId = userId;
 
-  // sk-mem key（用于 TDAI ACL / MetadataClient 的 x-tdai-user-key）就是入口的 apiKey。
-  const callerUserKey = apiKey || null;
+  // sk-mem key（用于 TDAI ACL / MetadataClient 的 x-tdai-user-key）。agent 路径下
+  // 为固定记忆账号，否则为调用方 header，与模型认证 Key（x-api-key）分离。
+  const callerUserKey = memoryKey || null;
 
   // Activate Redis storage early — must run BEFORE session init.
   if (config.redis?.enabled) {
@@ -682,8 +701,11 @@ export async function handleAnthropicMessages(
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
       const store = getSessionStore();
-      const metadataClient = getMetadataClient(config.coreSkill, spaceId, apiKey);
-      const presetIdentity = parsePresetIdentity(config.sessionInit, lcHeaders);
+      const metadataClient = getMetadataClient(config.coreSkill, spaceId, memoryKey);
+      // 上游 agent（按路径第一段）可携带受信内存 binding；调用者已在早期鉴权中
+      // 通过绑定 Team 的 active member 校验，因此客户端无需再传内存身份头。
+      const serverPreset = trustedPreset(upstreamRoute);
+      const presetIdentity = serverPreset ?? parsePresetIdentity(config.sessionInit, lcHeaders);
 
       // ── Session Recovery: try L2b binding before falling into session-init form ──
       const compositeKey = `${agentSource}:${sessionKey}`;
@@ -762,9 +784,10 @@ export async function handleAnthropicMessages(
           { stream: isStream, modelId: modelId as string, protocol: "anthropic" },
           agentSource,
           metadataClient,
-          apiKey,
+          memoryKey,
           spaceId,
           presetIdentity,
+          serverPreset,
         );
       }
 
@@ -820,6 +843,7 @@ export async function handleAnthropicMessages(
             keyId: sessionKey,
             userId: userId || "anonymous",
             agentSource,
+            spaceId,
             sessionInfo: initResult.sessionInfo as import("./session/types.js").SessionInfo,
             agentDetail: initResult.agentDetail ?? null,
             taskDetail: initResult.taskDetail ?? null,
@@ -911,7 +935,7 @@ export async function handleAnthropicMessages(
         config,
         spaceId,
         userId,
-        apiKey: apiKey || "",
+        apiKey: memoryKey || "",
         sessionInfo: sessionInfo as Record<string, unknown>,
         protocol: "anthropic",
         stream: isStream,
@@ -1054,9 +1078,8 @@ export async function handleAnthropicMessages(
   // prefix); both url and apiKey may be overridden per agent. When there's
   // no entry, we fall through to the Anthropic-specific global (costGuard
   // .anthropicUpstream) and finally to upstream.url — exactly as before.
-  const agentUpstreamEntry = agentFromPath ? config.upstream.agents?.[agentFromPath] : undefined;
   const defaultUpstreamUrl =
-    agentUpstreamEntry?.url ||
+    upstreamRoute.entry?.url ||
     config.costGuard.anthropicUpstream?.url ||
     config.upstream.url;
   // Normalize the request path to the canonical upstream endpoint so the
@@ -1161,16 +1184,10 @@ export async function handleAnthropicMessages(
   writeRequestLog(config, body);
 
   // ── Build upstream request ───────────────────────────────────────────────
-  // Per-agent apiKey resolution — three cases:
-  //   (a) no entry in agents map           → global upstream.apiKey (兜底)
-  //   (b) entry present, apiKey empty      → "" (passthrough, keep client key)
-  //   (c) entry present, apiKey non-empty  → agent.apiKey (server-side key)
-  // The presence of an entry (case b/c) is what cuts the global fallback —
-  // this is the switch that lets one proxy serve mixed server-key / client-key
-  // agents from a single config.
-  const effectiveApiKey = agentUpstreamEntry
-    ? (agentUpstreamEntry.apiKey ?? "")
-    : config.upstream.apiKey;
+  // v4.3+ 简化：Per-agent 不再配置 apiKey。命中 agent 配置时 effectiveApiKey
+  // 为空 → 透传客户端原始 Key；未命中时使用全局 upstream.apiKey 兜底。
+  // 记忆身份由独立的 x-tdai-user-key 请求头携带，与模型认证分离。
+  const effectiveApiKey = upstreamRoute.apiKey;
   const upstreamHeaders = buildUpstreamHeaders(c, config, target, sessionKey, effectiveApiKey);
 
   // Optional private preparation stage. It rewrites `body` / `messages` in
@@ -1198,6 +1215,8 @@ export async function handleAnthropicMessages(
   });
 
   const { body: upstreamBody, sanitizedCount } = buildUpstreamBody(body, target);
+  const removedImages = stripUnsupportedImages(upstreamBody, config.upstream.supportsImages);
+  if (removedImages) pipe.info("FORWARD", `stripped ${removedImages} image content block(s)`);
   if (sanitizedCount > 0) {
     pipe.info(
       "FORWARD",
@@ -1229,7 +1248,7 @@ export async function handleAnthropicMessages(
 
   // ── Forward to upstream (with automatic retry if configured) ──────────────
   const forwardTimeoutMs = config.server.forwardTimeoutMs ?? 600_000;
-  pipe.forwardStart();
+  pipe.forwardStart(target.url);
   let upstreamResp: Response;
   let retried = false;
 
@@ -1597,6 +1616,7 @@ export async function handleAnthropicMessages(
     effectiveModel,
     target.url,
     "usage",
+    spaceId,
   );
   if (creditOutcome.attempted && !creditOutcome.ok) {
     pipe.error("CREDIT_REPORT", creditOutcome.errorMessage ?? "unknown");
@@ -1998,6 +2018,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
         ctx.modelId,
         ctx.upstreamUrl,
         "usage",
+        ctx.spaceId,
       )
         .then((outcome) => {
           if (outcome.attempted && !outcome.ok) {

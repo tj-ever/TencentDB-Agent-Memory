@@ -10,10 +10,14 @@
 #   - 最小中文字体 fonts-wqy-zenhei（~9MB；不装 noto 全量，原型文字能渲染即可）
 FROM node:22-bookworm-slim
 
+# Claude 执行代码与飞书交付所需的最小工具集。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
     fonts-wqy-zenhei \
+    curl git jq \
+    ripgrep \
+    python3 \
   && rm -rf /var/lib/apt/lists/*
 
 # claude CLI：容器内 headless 执行 claude -p

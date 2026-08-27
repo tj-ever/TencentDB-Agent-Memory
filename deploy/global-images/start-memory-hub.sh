@@ -83,8 +83,8 @@ fi
 pull_image "$MEMORY_HUB_IMAGE"
 rm_container_if_exists "$CONTAINER"
 
-# 内部 knowledge 通过 upstream memory 调 LLM 走 custom 模式，直接指向 MEMORY_LLM_*
-# LLM_MODE=custom → 不走 memory 的 LLM proxy，而是 knowledge 直连用户提供的端点
+# knowledge 默认通过 MemoryProxy 的 system user 访问上游，和机器人共用 Proxy 上游配置。
+# MEMORY_LLM_* 仍作为知识服务启动校验及未绑定场景的默认参数传入。
 info "启动 memory-hub (image=$MEMORY_HUB_IMAGE, panel=$PANEL_PORT knowledge=$KNOWLEDGE_PORT)"
 $DOCKER run -d --name "$CONTAINER" \
   --network "$NETWORK" \
@@ -101,13 +101,16 @@ $DOCKER run -d --name "$CONTAINER" \
   -e REMOTE_INSTANCE_URL="http://memory-core:8420" \
   -e REMOTE_INSTANCE_KEY="$MEMORY_CORE_GATEWAY_API_KEY" \
   -e REMOTE_INSTANCE_PROXY_URL="$MEMORY_HUB_PROXY_PUBLIC_URL" \
-  -e LLM_MODE=custom \
+  -e MEMORY_HUB_PROXY_PUBLIC_URL="$MEMORY_HUB_PROXY_PUBLIC_URL" \
+  -e LLM_MODE=proxy \
   -e LLM_PROTOCOL="${MEMORY_LLM_PROTOCOL:-openai}" \
   -e LLM_API_KEY="$MEMORY_LLM_API_KEY" \
   -e LLM_BASE_URL="$MEMORY_LLM_BASE_URL" \
   -e LLM_MODEL="$MEMORY_LLM_MODEL" \
-  -e KNOWLEDGE_LLM_BINDING_SYNC=0 \
+  -e KNOWLEDGE_LLM_BINDING_SYNC=1 \
+  -e KNOWLEDGE_LLM_PROXY_BASE_URL="http://tdai-proxy:8096/claude-code/default/v1" \
   -e MEMORY_BRIDGE_URL="${MEMORY_BRIDGE_URL:-http://tdai-memory-bridge:8130}" \
+  -e MEMORY_PROXY_URL="${MEMORY_PROXY_URL:-http://tdai-proxy:8096}" \
   "$MEMORY_HUB_IMAGE" >/dev/null
 
 wait_healthy "$CONTAINER" 120

@@ -181,7 +181,7 @@ export async function handleAuxiliaryEndpoint(
 
   // 与主 handler 保持一致：调用 auth 服务校验，未通过则 401。
   // spaceId 来源于请求路径 /proxy/<spaceId>/...；无路径前缀时为 ""。
-  const spaceId = extractSpaceIdFromPath(c.req.path) ?? "";
+  const spaceId = extractSpaceIdFromPath(c.req.path, new Set(Object.keys(config.upstream.agents))) ?? "";
   const { userId, rejected: userKeyRejected, rejectReason } =
     await verifyUserKey(apiKey, spaceId);
   if (userKeyRejected) {
@@ -271,6 +271,7 @@ export async function handleAuxiliaryEndpoint(
         modelId,
         upstreamUrl,
         "usage",
+        spaceId,
       );
     } catch (err: unknown) {
       log.error(

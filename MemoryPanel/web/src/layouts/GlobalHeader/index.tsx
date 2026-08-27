@@ -1,7 +1,7 @@
 /**
  * GlobalHeader — 全局顶栏（跨越侧边栏 + 内容区，最外层通栏）
  *
- *   左侧：品牌 Logo「AI交付智协平台」 + 分隔线 + 团队切换器（TeamSwitcher）
+ *   左侧：品牌 Logo「AI交付协同平台」 + 分隔线 + 团队切换器（TeamSwitcher）
  *   右侧：同步状态指示 + 语言切换 + 用户头像菜单
  */
 import { useState } from 'react';
@@ -34,6 +34,7 @@ export function GlobalHeader({
   instanceName,
   onReplayOnboarding,
   onLogout,
+  onOpenMobileNav,
 }: {
   userRole: TeamRole | null;
   currentUser: string;
@@ -46,6 +47,8 @@ export function GlobalHeader({
    */
   onReplayOnboarding?: () => void;
   onLogout: () => void;
+  /** 移动端唤出导航抽屉：仅窄屏汉堡按钮可见，宽屏按钮 display:none */
+  onOpenMobileNav?: () => void;
 }) {
   const { t } = useTranslation();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -55,8 +58,22 @@ export function GlobalHeader({
     <header className="_memory-global-header">
       {/* 左侧：品牌 + 团队切换器 */}
       <div className="_memory-global-header-left">
+        {/* 移动端汉堡导航按钮：宽屏隐藏，窄屏由 tea-override.css 媒体查询置 display:inline-flex */}
+        {onOpenMobileNav && (
+          <button
+            type="button"
+            className="_memory-mobile-nav-btn _memory-global-header-icon-btn"
+            aria-label={t('header.nav.menu')}
+            title={t('header.nav.menu')}
+            onClick={onOpenMobileNav}
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        )}
         <div className="_memory-global-header-brand">
-          <img src="/logo.png" alt="AI交付智协平台" className="_memory-global-header-logo" />
+          <img src="/logo.png" alt="AI交付协同平台" className="_memory-global-header-logo" />
           <span className="_memory-global-header-brand-text">{t('header.brand')}</span>
         </div>
         <TeamSwitcher userRole={userRole} />
@@ -135,7 +152,7 @@ export function GlobalHeader({
         />
       )}
 
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} userRole={userRole} />}
     </header>
   );
 }

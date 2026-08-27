@@ -99,7 +99,7 @@ cp config.example.yaml config.yaml
 
 At minimum confirm:
 
-- `upstream.url` / `upstream.apiKey` — upstream LLM address and credentials
+- `upstream.url` / `upstream.apiKey` — upstream LLM address and credentials (**Key split**: when an agent entry is hit, the model key is always passthrough from the caller; the proxy no longer configures/replaces per-agent keys; see "Client configuration" and "Custom Agent upstream" below)
 - `auth.url` / `tdai.endpoint` / `skill.endpoint` — point to your MemoryCore Gateway (default `http://127.0.0.1:8420`)
 
 > **Run locally without Redis**: the example config defaults to `redis.enabled: true`, which spams `ECONNREFUSED 127.0.0.1:6379` when no Redis is running locally. For pure local development, set `redis.enabled: false` + `storage.enabled: true` (`storage.backend: sqlite`); session/injection/Skill state then goes to local SQLite and the process starts up cleanly.
@@ -163,14 +163,32 @@ Always uses `./config.yaml`, auto-detects the `node` path (nvm / fnm compatible)
 
 ## Client configuration
 
-Point the coding agent's upstream address at this proxy and keep the rest (`apiKey`, `model`, ...) unchanged. Include `spaceId` (memory instance id) in the path — the proxy auto-extracts it for auth, injection and billing.
+Point the coding agent's upstream address at this proxy. **The model key and the memory key are separate**:
+
+- **Model key** (`ANTHROPIC_AUTH_TOKEN` / OpenAI `apiKey`): the developer's **own model-provider key**, passed through to the upstream unchanged. When an agent route is hit, the global `upstream.apiKey` no longer applies.
+- **Memory key** (`x-tdai-user-key` header): independently carries the Tencent Memory identity used for `user_id` auth, context injection and billing. The caller must be an active member of the bound team.
+
+Include `spaceId` (memory instance id) in the path — the proxy auto-extracts it for auth, injection and billing.
+
+Claude Code (generic form at `/proxy/...`; when a "Developer upstream" agent is configured use `/<agentName>/default` — see below):
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8096/proxy/<spaceId>",
+    "ANTHROPIC_AUTH_TOKEN": "<your model-provider key>",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-tdai-user-key: <your Tencent Mem user key>"
+  }
+}
+```
 
 OpenAI-compatible client:
 
 ```json
 {
-  "apiKey": "sk-mem-xxx",
-  "url": "http://localhost:8096/proxy/<spaceId>/v1/chat/completions"
+  "apiKey": "<your model-provider key>",
+  "url": "http://localhost:8096/proxy/<spaceId>/v1/chat/completions",
+  "headers": { "x-tdai-user-key": "<your Tencent Mem user key>" }
 }
 ```
 
@@ -178,10 +196,13 @@ Anthropic Messages client:
 
 ```json
 {
-  "apiKey": "sk-mem-xxx",
-  "url": "http://localhost:8096/proxy/<spaceId>/v1/messages"
+  "apiKey": "<your model-provider key>",
+  "url": "http://localhost:8096/proxy/<spaceId>/v1/messages",
+  "headers": { "x-tdai-user-key": "<your Tencent Mem user key>" }
 }
 ```
+
+> For observability/billing correlation, `x-tdai-user-key` is what the proxy logs and charges by. Do not reuse the model key as the memory identity.
 
 ## Main HTTP endpoints
 
@@ -207,7 +228,7 @@ Config sections at a glance:
 | Section | Purpose |
 | --- | --- |
 | `server` | listen host / port, upstream forward timeout |
-| `upstream` | default upstream URL and global `apiKey` (replaces forward auth when non-empty) |
+| `upstream` | default upstream URL, global `apiKey`, default model, image support and agent upstream mapping (v4.3+: model key and memory key are separate; per-agent apiKey no longer exists) |
 | `log` | log directory, level, backend and rotation policy |
 | `redis` | default backend for session / injection / Skill state (used when `storage.enabled` is off) |
 | `storage` | unified storage abstraction (`cos` / `sqlite` / `fs` / `memory`); `cos` preferred for multi-node |
@@ -224,7 +245,7 @@ Config sections at a glance:
 | `rateLimit` | Input TPM / QPM limiting per memory instance × actual model |
 | `clickhouse` | per-turn usage reporting (billing data source) |
 | `creditReport` / `creditPricing` | Credit billing report and pricing table |
-| `upstream.agents` | override upstream URL + apiKey per agent name (e.g. route `claude-code` through CCR) |
+| `upstream.agents` | override upstream URL per agent name (v4.3+: URL routing only, model key is always passthrough; memory identity is carried independently via `x-tdai-user-key` header) |
 
 > `injection`, `extraction`, `sessionInit`, `tdai`, `skill`, `knowledge`, `skillRuntime` are the memory-related sections — focus on them first when integrating.
 

@@ -286,3 +286,116 @@ a,
   align-items: center;
   gap: 8px;
 }
+
+/* ===== 移动端适配（≤768px） =====
+ * 纯 CSS 覆盖，不改任何 JSX 结构（导航抽屉除外，见 GlobalHeader）。
+ * 策略：窄屏隐藏左侧导航 Sider（导航靠顶栏汉堡抽屉），
+ * 顶栏/内边距收缩，弹窗/抽屉/下拉/通知均封顶到视口宽度，
+ * 固定宽度的横排行允许换行堆叠，内容区表格横向滚动。 */
+@media (max-width: 768px) {
+  /* 隐藏左侧菜单栏：移动端让出全宽给内容；导航改走顶栏汉堡抽屉 */
+  .tea-layout__sider {
+    display: none !important;
+  }
+
+  /* 顶栏收缩 */
+  ._memory-global-header {
+    height: 44px;
+    padding: 0 10px;
+    gap: 8px;
+  }
+  /* 隐藏品牌文字，只保留 logo（顶栏宽度有限） */
+  ._memory-global-header-left {
+    gap: 8px;
+    min-width: 0;
+  }
+  ._memory-global-header-brand-text {
+    display: none;
+  }
+  /* 团队切换触发器收窄，名称截断更早触发 */
+  ._memory-team-switcher-trigger {
+    max-width: 132px;
+  }
+  /* 顶栏右侧收紧：隐藏语言文字只留图标、隐藏用户名只留头像 */
+  ._memory-global-header-right {
+    gap: 6px;
+  }
+  ._memory-lang-switcher-label {
+    display: none;
+  }
+  ._memory-global-header-username {
+    display: none;
+  }
+  /* 移动端汉堡导航按钮：仅窄屏可见（默认 hidden 由下方媒体查询外规则控制） */
+  ._memory-mobile-nav-btn {
+    display: inline-flex;
+  }
+
+  /* 内容区留白收窄 */
+  ._memory-content-body {
+    padding: 10px;
+  }
+
+  /* TabBar 横向滚动（移动端标签多时避免挤压换行） */
+  ._memory-tabbar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 触屏无 hover：关闭按钮强制常显，避免无法关闭标签 */
+  ._memory-tabbar-close {
+    opacity: 1;
+  }
+
+  /* 表格：允许横向滚动，避免挤压变形 */
+  .tea-table__fixed,
+  .tea-layout__content-body {
+    overflow-x: auto;
+  }
+
+  /* 页面内常见横排工具条：窄屏换成纵向或允许换行 */
+  .tea-justify-grid,
+  [class*='justify'] {
+    flex-wrap: wrap;
+  }
+
+  /* ===== 弹窗/抽屉/下拉/通知：封顶到视口宽度 ===== */
+  /* 大尺寸 Modal（size-l 800 / size-xl 950）在窄屏占满视口留 8px 边距 */
+  .tea-dialog__inner.size-l,
+  .tea-dialog__inner.size-xl {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px);
+  }
+  /* 抽屉默认 360 / size-l 800 在窄屏改为 88% 视口宽并左移停靠 */
+  .tea-drawer,
+  .tea-drawer.size-l {
+    width: 88vw !important;
+    max-width: 88vw;
+  }
+  /* 导航抽屉内的 Menu 默认 200px 宽，撑满抽屉避免右侧大片留白 */
+  .tea-drawer .tea-menu {
+    width: 100%;
+    border-right: none;
+  }
+  /* 团队切换下拉面板固定 320px，窄屏封顶 */
+  .tea-dropdown-box {
+    max-width: calc(100vw - 24px);
+  }
+  /* 开发者配置页：固定 flex 宽度的横排表单行在窄屏堆叠成单列 */
+  ._memory-agent-row > label {
+    flex: 1 1 100% !important;
+    min-width: 0;
+  }
+  ._memory-agent-row > div {
+    width: 100%;
+  }
+  /* 设置弹窗 Proxy 上游表单：固定 minWidth 在窄屏堆叠 */
+  ._memory-proxy-form > .tea-form-item {
+    min-width: 0 !important;
+    flex: 1 1 100% !important;
+  }
+  /* 通知卡片右上角默认 max-width 368px，窄屏贴边 */
+  .tea-notification-wrap {
+    max-width: calc(100vw - 16px);
+    right: 8px;
+  }
+}

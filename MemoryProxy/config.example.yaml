@@ -36,36 +36,49 @@ upstream:
   # 留空则透传客户端原始 API Key。
   apiKey: "<YOUR_TOKENHUB_API_KEY>"
 
-  # ── Per-Agent 覆盖 ─────────────────────────────────────────────────────────
-  # 按 agent 名（URL 路径前缀 /{agent}/...）覆盖 url + apiKey。
+  # ── Per-Agent 覆盖（v4.3+ 简化：仅 URL 分流，不再配置 agent 级 Key） ────────
+  # 按 agent 名（URL 路径前缀 /{agent}/...）覆盖 url + model。
   # Anthropic 和 OpenAI 协议共用同一张表。
   #
-  # 兜底规则（重要）——只有"没配这个 agent"才会走外层 upstream 兜底：
+  # 关键变更：v4.3+ 去掉 agent 级 apiKey 字段。模型 Key 一律由调用方透传，
+  # proxy 不做服务端替换。记忆身份通过独立的 x-tdai-user-key 请求头携带。
   #
-  #   ┌────────────────────────────────┬────────────┬───────────────────────┐
-  #   │ 该 agent 的配置                │ 用的 url   │ 用的 apiKey           │
-  #   ├────────────────────────────────┼────────────┼───────────────────────┤
-  #   │ 不在 agents 里                 │ upstream.url│ upstream.apiKey (兜底)│
-  #   │ 在 agents 里，只有 url         │ agent.url  │ 透传客户端请求的 key  │
-  #   │ 在 agents 里，url + apiKey     │ agent.url  │ agent.apiKey          │
-  #   └────────────────────────────────┴────────────┴───────────────────────┘
+  # 兜底规则：
   #
-  # 中间一行是设计上刻意留的口子：一旦 agent 出现在这张表里，外层
-  # upstream.apiKey 的兜底就被切断，允许运营方在同一个 proxy 里让
-  # 一部分 agent 走服务端 key、另一部分透传客户端自己的 key。
+  #   ┌────────────────────────────────┬────────────┬─────────────────────────┐
+  #   │ 该 agent 的配置                │ 用的 url   │ 用的 apiKey             │
+  #   ├────────────────────────────────┼────────────┼─────────────────────────┤
+  #   │ 不在 agents 里                 │ upstream.url│ upstream.apiKey (兜底) │
+  #   │ 在 agents 里（只有 url/model）  │ agent.url  │ 透传客户端请求的 key   │
+  #   └────────────────────────────────┴────────────┴─────────────────────────┘
+  #
+  # 注意：一旦 agent 出现在这张表里，外层 upstream.apiKey 的兜底就被切断，
+  # 调用方必须携带自己的模型 Key 进行认证。
+  # 历史配置中的 agent.apiKey 会被静默忽略。
   #
   # 完整优先级（高→低）：
   #   1. costGuard 内部路由自带的凭据（cheap-model 兜底）
-  #   2. upstream.agents[agent].url + upstream.agents[agent].apiKey
+  #   2. upstream.agents[agent].url + 透传客户端 Key
   #   3. costGuard.anthropicUpstream.url（仅 Anthropic 协议）
   #   4. upstream.url + upstream.apiKey（未命中 agent 时的默认）
   agents: {}
-    # claude-code:                                        # 服务端 key 模式
-    #   url: "https://claude-upstream.example.com/v1"
-    #   apiKey: "sk-ant-agent-key"
-    # codex:                                              # 客户端 key 透传模式
+    # claude-code:                                        # 开发者上游模式
+    #   url: "https://developer-upstream.example.com/v1"
+    #   # 模型 Key 由调用方自己携带（ANTHROPIC_AUTH_TOKEN）。
+    #   # 记忆身份两种方式二选一：
+    #   #   a) 调用方在 ANTHROPIC_CUSTOM_HEADERS 里带 x-tdai-user-key；
+    #   #   b) 服务端配固定记忆账号（最小配置）：开发者只需自己的模型 Key + 路径，
+    #   #      命中后 proxy 以其 memory 身份注入记忆 / 计费，无需开发者传用户 key，
+    #   #      也无需加入任何团队。
+    #   binding: { team_id: "team-x", agent_id: "agent-fw1" }
+    #   memory: { key: "sk-mem-xxxx", spaceId: "spc-yyy" }
+    # codex:                                              # 客户端 Key 透传模式
     #   url: "https://codex-upstream.example.com/v1"
-    #   # 不写 apiKey → 透传客户端自己带上来的 key，不走外层兜底
+    #   # 同样不需要配置 Key，调用方提供自己的模型凭据。
+    # 注意：workbuddy / codebuddy / claude-code 等客户端不需要单独配 per-agent override，
+    # 它们的请求会自然落到外层 upstream.url + 鉴权走的 user_key，proxy 自动按 user_id
+    # 在内核拉取对应的 team/agent/task 上下文（不需要手动创建资源）。
+    # 用户资产（Team / Agent / Task / 用户授权）请在 MemoryPanel Web 面板里创建。
     # 注意：workbuddy / codebuddy / claude-code 等客户端不需要单独配 per-agent override，
     # 它们的请求会自然落到外层 upstream.url + 鉴权走的 user_key，proxy 自动按 user_id
     # 在内核拉取对应的 team/agent/task 上下文（不需要手动创建资源）。
@@ -77,15 +90,20 @@ upstream:
 # 面板（端口 8123）创建。客户端接入流程：
 #
 #   1. 管理员在 MemoryPanel 里：
-#      - 创建 User，拿到 sk-mem-xxx 格式的 user_key
+#      - 创建 User，拿到 sk-mem-xxx 格式的 user_key（记忆 Key）
 #      - 创建 Team，把用户加为成员
 #      - 在 Team 下创建 Agent、Task
 #   2. 客户端配置（baseUrl 只需写到 {agent}/{spaceId}，客户端 SDK 自动拼接 API path）：
 #      - Base URL: http://<proxy-host>:8096/{agent}/{spaceId}
 #        例如: http://proxy.example.com:8096/workbuddy/mem-demo
 #              http://proxy.example.com:8080/codebuddy/default
-#      - API Key:  第 1 步拿到的 user_key（sk-mem-* 格式）
+#      - API Key:  第 1 步拿到的 user_key（sk-mem-* 格式，记忆 Key）
+#                   注意：如果客户端本身也是模型消费者（如 Claude Code），
+#                   模型 Key 与记忆 Key 分离——模型 Key 用你自己的模型提供方凭据，
+#                   记忆 Key 走 x-tdai-user-key 请求头。
 #      - Model:    上游支持的模型名
+#      - 记忆身份: 通过 x-tdai-user-key 请求头独立携带（见客户端配置章节）
+#   3. 客户端发第一条消息 → proxy 拦截 → verifyUserKey → listTeams → listAgents
 #   3. 客户端发第一条消息 → proxy 拦截 → verifyUserKey → listTeams → listAgents
 #      → listTasks → 交互式表单选择 team/agent/task → 注册 session → 每轮自动注入
 #      L2(agent) + L3(team) 记忆到 system prompt → 转发上游 LLM。
@@ -523,8 +541,8 @@ sessionInit:
   #   agent_id: agt-xxxxxxxxxx
   #   task_id: task-xxxxxxxxxx
   # WorkBuddy 客户端的 auth/verify 没有真人身份 → 用下面这条把 userId 硬绑定到
-  # 一个真实的 kernel user_id（配合 upstream.agents.workbuddy.apiKey 中的
-  # x-tdai-user-key 用同一个 user 名下的 key）。生产环境保持注释。
+  # 一个真实的 kernel user_id（配合调用方上报记忆时带的 x-tdai-user-key，
+  # 即该用户名下同一个 key）。生产环境保持注释。
   # debugForceUserId: usr-xxxxxxxxxx
   # 调试模式下输出详细诊断日志（请求 tools schema、system prompt 摘要等）。
   # 仅本地/E2E 联调使用，生产环境务必保持 false 或不配置。默认关闭。

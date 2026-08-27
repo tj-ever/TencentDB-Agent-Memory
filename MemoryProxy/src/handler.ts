@@ -37,6 +37,8 @@ import { resolveModelId, isModelInPricing } from "./pricing.js";
 import { inspectAndRecord } from "./identity.js";
 import { writeFailedReportRaw } from "./clickhouse.js";
 import { verifyUserKey } from "./auth.js";
+import { stripUnsupportedImages } from "./custom/request-body.js";
+import { isAgentBindingAuthorized, resolveMemoryIdentity, resolveUpstreamRoute } from "./custom/upstream.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "./systemUser.js";
 import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { TdaiClient } from "./tdai/client.js";
@@ -202,6 +204,7 @@ const SKIP_REQUEST_HEADERS = new Set([
   "content-length",
   "transfer-encoding",
   "connection",
+  "x-tdai-user-key",
 ]);
 
 const SKIP_RESPONSE_HEADERS = new Set([
@@ -451,10 +454,24 @@ export async function handleChatCompletions(
   // both the systemUser short-circuit and the normal pipeline.
   const earlyAuthHeader = c.req.header("authorization") ?? c.req.header("Authorization") ?? "";
   const earlyApiKey = extractBearerToken(earlyAuthHeader);
-  const earlySpaceId = extractSpaceIdFromPath(c.req.path) ?? "";
-  const earlyVerify = await verifyUserKey(earlyApiKey, earlySpaceId);
+  // 记忆身份：命中带 memory 配置的绑定 agent 时用 agent 固定记忆账号覆盖调用方；
+  // 否则回退 x-tdai-user-key / 模型 Key。模型 Key 始终仅用于上游 LLM 认证。
+  const upstreamRoute = resolveUpstreamRoute(config, c.req.path);
+  const pathSpaceId = upstreamRoute.spaceId || extractSpaceIdFromPath(c.req.path) || "";
+  const earlyMemoryIdentity = resolveMemoryIdentity(
+    upstreamRoute,
+    c.req.header("x-tdai-user-key"),
+    earlyApiKey,
+    pathSpaceId,
+  );
+  const earlyMemoryKey = earlyMemoryIdentity.memoryKey;
+  const earlySpaceId = earlyMemoryIdentity.spaceId;
+  const earlyVerify = await verifyUserKey(earlyMemoryKey, earlySpaceId);
   if (earlyVerify.rejected) {
     return c.json({ error: `Authentication failed: ${earlyVerify.rejectReason ?? "unknown"}` }, 401);
+  }
+  if (!(await isAgentBindingAuthorized(upstreamRoute, earlyMemoryKey, earlyVerify.userId, config))) {
+    return c.json({ error: "Agent upstream access denied" }, 403);
   }
 
   // ── Parse body ──────────────────────────────────────────────────────────
@@ -468,7 +485,6 @@ export async function handleChatCompletions(
   } catch {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
-
   // ── Optional inbound body dump (dev only) ─────────────────────────
   // 打开: PROXY_DEBUG_DUMP_INBOUND=/tmp/proxy-inbound
   // 每个入站请求落一个文件,方便排查客户端 replay 时到底带没带某个字段。
@@ -575,7 +591,7 @@ export async function handleChatCompletions(
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
   const requestedModel = typeof body.model === "string" ? body.model : "unknown";
-  if (!isModelInPricing(config.creditPricing, requestedModel)) {
+  if (!upstreamRoute.model && !isModelInPricing(config.creditPricing, requestedModel)) {
     return c.json(
       {
         error: {
@@ -593,9 +609,10 @@ export async function handleChatCompletions(
   // resolve it back to the real upstream model_id (e.g. "ep-pksklwtb") BEFORE
   // routing / logging / forwarding, so model_id stays the canonical identity
   // across the whole pipeline. No-op when `model` is already a real id/unknown.
-  const modelId = resolveModelId(config.creditPricing, requestedModel);
+  // 服务端上游模型不受客户端展示名校验约束。
+  const modelId = upstreamRoute.model ?? resolveModelId(config.creditPricing, requestedModel);
   const modelAliasApplied = typeof body.model === "string" && modelId !== requestedModel;
-  if (modelAliasApplied) body.model = modelId;
+  if (upstreamRoute.model || modelAliasApplied) body.model = modelId;
 
   // ── System-user short-circuit ────────────────────────────────────────────
   // Internal service accounts (see `systemUsers` config) bypass the entire
@@ -634,10 +651,8 @@ export async function handleChatCompletions(
   }
 
   // ── Resolve agent source from URL path (e.g. /claude-code/v1/chat/completions) ──
-  const pathParts = c.req.path.split("/").filter(Boolean);
-  const agentFromPath = pathParts[0] && !["v1", "proxy", "skill-bridge", "memory-bridge"].includes(pathParts[0])
-    ? pathParts[0] : undefined;
-  const agentSource = agentFromPath ?? "claude-code";
+  const agentFromPath = upstreamRoute.agentName;
+  const agentSource = upstreamRoute.agentSource;
 
   // ── Identity inspection ──────────────────────────────────────────────────
   const reqHeaders: Record<string, string> = {};
@@ -650,6 +665,10 @@ export async function handleChatCompletions(
   const authHeader = c.req.header("authorization") ?? c.req.header("Authorization") ?? "";
   const apiKey = extractBearerToken(authHeader);
   let keyId = apiKey ? apiKeyToKeyId(apiKey) : "unknown";
+  // 记忆身份 Key：早期段已解析（agent 固定记忆账号或调用方 header），
+  // 用于 kernel /v3/meta/* 鉴权及 memory command 执行。模型 Key 仅用于
+  // 上游 LLM 认证 + trace keyId 命名。
+  const memoryKey = earlyMemoryIdentity.memoryKey;
 
   // ── Lowercased headers for agent profile detection + session key ──────────
   const lcHeaders: Record<string, string> = {};
@@ -746,7 +765,7 @@ export async function handleChatCompletions(
       //     session-init 直接 bypass，前端表单永不弹出。
       //   - 只有客户端未提供 apiKey 时（例如某些内部脚本），才回退到 config。
       // 与 workbuddyHandler.ts 里的 kernelUserKey 逻辑对齐（那里也是客户端优先）。
-      const kernelUserKey = apiKey || config.tdai?.apiKey || "";
+      const kernelUserKey = memoryKey || config.tdai?.apiKey || "";
       const metadataClient = getMetadataClient(config.coreSkill, spaceId, kernelUserKey);
       const presetIdentity = parsePresetIdentity(config.sessionInit, lcHeaders);
 
@@ -844,7 +863,7 @@ export async function handleChatCompletions(
             serviceId: config.tdai.serviceId,
             serviceIdOverride: spaceId,
             userId: (initResult.sessionInfo as { user_id?: string }).user_id,
-            userKey: apiKey || null,
+            userKey: memoryKey || null,
             timeoutMs: config.tdai.memory.timeoutMs,
           });
           console.log(`[asset-capability] user=${(initResult.sessionInfo as { user_id?: string }).user_id ?? "-"} flags=${JSON.stringify(assetCapabilities)}`);
@@ -886,8 +905,9 @@ export async function handleChatCompletions(
             agentDetail: initResult.agentDetail ?? null,
             taskDetail: initResult.taskDetail ?? null,
             assetCapabilities,
-            // 透传 caller 的 sk-mem key，用于 prewarm 阶段 TDAI ACL 校验（x-tdai-user-key）
-            callerUserKey: apiKey ?? undefined,
+            // 透传记忆身份 key（agent 固定记忆账号或调用方 header），用于 prewarm
+            // 阶段 TDAI ACL 校验（x-tdai-user-key），与模型认证 Key（Authorization）分离。
+            callerUserKey: memoryKey || undefined,
           });
         } catch (err) {
           console.warn(
@@ -961,7 +981,7 @@ export async function handleChatCompletions(
         config,
         spaceId,
         userId,
-        apiKey: apiKey || "",
+        apiKey: memoryKey || "",
         sessionInfo: sessionInfo as Record<string, unknown>,
         protocol: "openai",
         stream: isStream,
@@ -1075,7 +1095,7 @@ export async function handleChatCompletions(
           ? {
               session: sessionInfo,
               assetCapabilities,
-              userKey: apiKey || undefined,
+              userKey: memoryKey || undefined,
             }
           : undefined,
       });
@@ -1089,19 +1109,7 @@ export async function handleChatCompletions(
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
 
   // ── Resolve forward target (opaque extension — no routing logic here) ──
-  // upstream.agents[agent] is a single map keyed by agent name — same lookup
-  // as anthropicHandler. Empty / missing entry → fall back to upstream.url,
-  // preserving legacy behavior for configs that don't declare `agents:` at all.
-  const agentUpstreamEntry = agentFromPath ? config.upstream.agents?.[agentFromPath] : undefined;
-  // Per-agent apiKey resolution — three cases:
-  //   (a) no entry in agents map           → global upstream.apiKey (兜底)
-  //   (b) entry present, apiKey empty      → "" (passthrough, keep client key)
-  //   (c) entry present, apiKey non-empty  → agent.apiKey (server-side key)
-  // Presence of an entry (case b/c) cuts the global fallback — that's what
-  // lets one proxy serve mixed server-key / client-key agents at once.
-  const effectiveApiKey = agentUpstreamEntry
-    ? (agentUpstreamEntry.apiKey ?? "")
-    : config.upstream.apiKey;
+  const effectiveApiKey = upstreamRoute.apiKey;
   // Normalize the request path to the canonical upstream endpoint so the
   // extension's URL joining matches the host whitelist behavior.
   const forwardEndpoint = matchWhitelistEndpoint(c.req.path)?.upstreamEndpoint ?? "/chat/completions";
@@ -1116,7 +1124,7 @@ export async function handleChatCompletions(
     hasTools,
     body,
     modelId,
-    defaultUpstreamUrl: agentUpstreamEntry?.url ?? config.upstream.url,
+    defaultUpstreamUrl: upstreamRoute.url,
     requestPath: forwardEndpoint,
     headers: lcHeaders,
     traceId,
@@ -1225,6 +1233,8 @@ export async function handleChatCompletions(
   });
 
   const upstreamBody = buildUpstreamBody(body, target);
+  const removedImages = stripUnsupportedImages(upstreamBody, config.upstream.supportsImages);
+  if (removedImages) pipe.info("FORWARD", `stripped ${removedImages} image content block(s)`);
   // Retry headers: preserve original client headers (x-request-id, user-agent,
   // etc.), then force the primary upstream's auth — retry always goes to the
   // default upstream (never the alternate route), so its apiKey must be applied
@@ -1609,6 +1619,7 @@ export async function handleChatCompletions(
     effectiveModel,
     target.url,
     "usage",
+    spaceId,
   );
   if (creditOutcome.attempted && !creditOutcome.ok) {
     pipe.error("CREDIT_REPORT", creditOutcome.errorMessage ?? "unknown");
@@ -2030,6 +2041,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       ctx.modelId,
       ctx.upstreamUrl,
       "usage",
+      ctx.spaceId,
     )
       .then((outcome) => {
         if (outcome.attempted && !outcome.ok) {

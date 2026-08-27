@@ -9,6 +9,8 @@ const FILE = join(DATA_DIR, 'bots.json');
 const SECRET_MASK = '********';
 // 容器部署指向同网络 proxy（BRIDGE_PROXY_DEFAULT 注入），本机跑默认 127.0.0.1
 const DEFAULT_PROXY_URL = process.env.BRIDGE_PROXY_DEFAULT || 'http://127.0.0.1:8096';
+// 机器人未显式配置 user_key 时的固定默认（部署在 .env 注入），保证 ANTHROPIC_AUTH_TOKEN 非空。
+const DEFAULT_USER_KEY = process.env.BRIDGE_USER_KEY_DEFAULT || '';
 
 export type BotStatus = 'stopped' | 'running' | 'error';
 
@@ -26,7 +28,6 @@ export interface Bot {
   memory: { proxy_base_url: string; space_id: string; user_key: string };
   binding: { team_id: string; agent_id: string; task_id: string };
   feishu: { app_id: string; app_secret: string; stream_initial_text: string; policy: BotPolicy };
-  llm: { model: string };
   session_mode: SessionMode;
   system_prompt: string;
   created_at: string;
@@ -94,7 +95,6 @@ export function publicBot(bot: Bot, status: BotStatus = 'stopped', error: string
       stream_initial_text: bot.feishu.stream_initial_text || '思考中…',
       policy: bot.feishu.policy || { requireMention: true, dmMode: 'open' },
     },
-    llm: { model: bot.llm.model || 'grok-4.6' },
     session_mode: bot.session_mode,
     system_prompt: bot.system_prompt || '',
     created_at: bot.created_at,
@@ -122,7 +122,7 @@ function normalize(input: BotInput, prev: Bot | null): Bot {
       proxy_base_url: input.memory?.proxy_base_url || prev?.memory.proxy_base_url || DEFAULT_PROXY_URL,
       space_id: input.memory?.space_id || prev?.memory.space_id || 'default',
       user_key: (!userKey || userKey === SECRET_MASK || userKey.endsWith('****'))
-        ? prev?.memory.user_key ?? ''
+        ? prev?.memory.user_key ?? DEFAULT_USER_KEY
         : userKey,
     },
     binding: {
@@ -138,7 +138,6 @@ function normalize(input: BotInput, prev: Bot | null): Bot {
       stream_initial_text: input.feishu?.stream_initial_text || prev?.feishu.stream_initial_text || '思考中…',
       policy,
     },
-    llm: { model: input.llm?.model || prev?.llm.model || 'grok-4.6' },
     session_mode: parseSessionMode(input.session_mode ?? prev?.session_mode ?? 'none'),
     system_prompt: input.system_prompt ?? prev?.system_prompt ?? '',
     created_at: prev?.created_at || now(),

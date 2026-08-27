@@ -486,21 +486,17 @@ async function forwardToUpstream(
   archiveCtx: WorkbuddyArchiveCtx | null = null,
 ): Promise<Response> {
   // ── Per-agent upstream override ──
-  // 对齐 codexHandler: 支持 config.upstream.agents?.workbuddy 单独指 URL/apiKey，
-  // 未配置时回退到全局 config.upstream.{url,apiKey}。
+  // 对齐 codexHandler: 支持 config.upstream.agents?.workbuddy 单独指 URL，
+  // 未配置时回退到全局 config.upstream.url。v4.3+ 不再配置 per-agent apiKey，
+  // 认证 Key 一律由客户端请求头透传或全局 upstream.apiKey 兜底。
   const perAgent = (config.upstream as unknown as {
-    agents?: { workbuddy?: { url?: string; apiKey?: string } };
+    agents?: { workbuddy?: { url?: string } };
   }).agents?.workbuddy;
   const upstreamBase = ((perAgent?.url ?? config.upstream.url ?? "") as string).replace(/\/$/, "");
   const upstreamPath = c.req.path.replace(/^\/workbuddy\/[^/]+/, "");
   const upstreamUrl = joinUrl(upstreamBase, upstreamPath);
 
   const headers = buildUpstreamHeaders(c, config);
-  // 若 per-agent 指定了独立 apiKey，覆盖全局注入的 authorization
-  if (perAgent?.apiKey) {
-    headers["authorization"] = `Bearer ${perAgent.apiKey}`;
-    delete headers["x-api-key"];
-  }
   const bodyStr = JSON.stringify(body);
 
   // 结构化埋点：与 codex 对齐（forwardStart / forwardDone / info 三段式）
@@ -826,9 +822,11 @@ export async function handleWorkbuddyEndpoint(
     extractBearerToken(rawAuth) ??
     rawXApiKey ??
     "";
-  const spaceId = extractSpaceIdFromPath(path) ?? "";
+  // 记忆身份 Key（x-tdai-user-key）优先于模型 Key，用于 TDAI ACL / kernel 鉴权。
+  const authMemoryKey = c.req.header("x-tdai-user-key") || apiKey;
+  const spaceId = extractSpaceIdFromPath(path, new Set(Object.keys(config.upstream.agents))) ?? "";
   const { userId, rejected: userKeyRejected, rejectReason } = await verifyUserKey(
-    apiKey,
+    authMemoryKey,
     spaceId,
   );
   if (userKeyRejected) {
@@ -875,7 +873,10 @@ export async function handleWorkbuddyEndpoint(
   const sessionKey = sessionId ?? `${keyId}:${traceId}`;
   const agentSource = "workbuddy";
   const isStream = body.stream !== false;
-  const callerUserKey = apiKey || null;
+  // sk-mem key（用于 TDAI ACL / MetadataClient 的 x-tdai-user-key）从独立的
+  // 请求头获取，与模型认证 Key（Authorization）分离。向后兼容：未传时回退到模型 Key。
+  const callerUserKey = c.req.header("x-tdai-user-key") || null;
+  const memoryKey = callerUserKey || apiKey || "";
 
   const turnSeq = countHumanTurnsWorkbuddy(body.input);
   const userQuery = workbuddyAdapter.extractUserText(body.input) ?? "";
@@ -923,7 +924,7 @@ export async function handleWorkbuddyEndpoint(
       // kernel 侧鉴权的 x-tdai-user-key 直接用客户端请求 bearer（与 codexHandler / anthropicHandler 对齐）。
       // WorkBuddy / Codex / Claude Code 桌面客户端携带的 bearer 就是用户 key，kernel 能识别；
       // 无需 config.tdai.apiKey 兜底（否则 config 里的 "local" 会覆盖真实用户 key，导致 401）。
-      const metadataClient = getMetadataClient(config.coreSkill, spaceId, apiKey);
+      const metadataClient = getMetadataClient(config.coreSkill, spaceId, memoryKey);
       const presetIdentity = parsePresetIdentity(config.sessionInit, headers);
 
       const compositeKey = `codex:${sessionKey}`;
@@ -998,7 +999,7 @@ export async function handleWorkbuddyEndpoint(
           },
           "codex", // ← 状态机 source: 复用 codex 分支
           metadataClient,
-          apiKey,
+          memoryKey,
           spaceId,
           presetIdentity,
         );
@@ -1138,7 +1139,7 @@ export async function handleWorkbuddyEndpoint(
           config,
           spaceId,
           userId: userId || "",
-          apiKey: apiKey || "",
+          apiKey: memoryKey || "",
           sessionInfo: sessionInfo as Record<string, unknown>,
           // ⚠️ WorkBuddy 走 Responses API，与 codex 同协议。传 "responses"，
           // executeMemCommand 内部会用对应的 responses SSE 骨架渲染命令响应。

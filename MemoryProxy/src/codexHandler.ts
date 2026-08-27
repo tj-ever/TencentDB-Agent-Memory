@@ -288,9 +288,11 @@ export async function handleCodexEndpoint(
     c.req.header("x-api-key") ??
     "";
 
-  const spaceId = extractSpaceIdFromPath(path) ?? "";
+  // 记忆身份 Key（x-tdai-user-key）优先于模型 Key，用于 TDAI ACL / kernel 鉴权。
+  const authMemoryKey = c.req.header("x-tdai-user-key") || apiKey;
+  const spaceId = extractSpaceIdFromPath(path, new Set(Object.keys(config.upstream.agents))) ?? "";
   const { userId, rejected: userKeyRejected, rejectReason } =
-    await verifyUserKey(apiKey, spaceId);
+    await verifyUserKey(authMemoryKey, spaceId);
   if (userKeyRejected) {
     return c.json(
       { error: `Authentication failed: ${rejectReason ?? "unknown"}` },
@@ -354,7 +356,10 @@ export async function handleCodexEndpoint(
   const agentSource = "codex";
   const isStream = body.stream !== false;
 
-  const callerUserKey = apiKey || null;
+  // sk-mem key（用于 TDAI ACL / MetadataClient 的 x-tdai-user-key）从独立的
+  // 请求头获取，与模型认证 Key（Authorization）分离。向后兼容：未传时回退到模型 Key。
+  const callerUserKey = c.req.header("x-tdai-user-key") || null;
+  const memoryKey = callerUserKey || apiKey || "";
 
   // ── 6b. Langfuse turn context (one trace = one turn) ────────────────────────
   // codex 的 turn 序号从 body.input[] 里"人类输入"数量推导（同 CC/CB 惯例；
@@ -407,7 +412,7 @@ export async function handleCodexEndpoint(
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
       const store = getSessionStore();
-      const metadataClient = getMetadataClient(config.coreSkill, spaceId, apiKey);
+      const metadataClient = getMetadataClient(config.coreSkill, spaceId, memoryKey);
       const presetIdentity = parsePresetIdentity(config.sessionInit, headers);
 
       const compositeKey = `${agentSource}:${sessionKey}`;
@@ -482,7 +487,7 @@ export async function handleCodexEndpoint(
           },
           agentSource,
           metadataClient,
-          apiKey,
+          memoryKey,
           spaceId,
           presetIdentity,
         );
@@ -631,7 +636,7 @@ export async function handleCodexEndpoint(
           config,
           spaceId,
           userId: userId || "",
-          apiKey: apiKey || "",
+          apiKey: memoryKey || "",
           sessionInfo: sessionInfo as Record<string, unknown>,
           protocol: "responses",
           stream: isStream,
@@ -961,14 +966,8 @@ async function forwardToUpstream(
   const upstreamUrl = joinUrl(upstreamBase, c.req.path);
   const upstreamHeaders = buildUpstreamHeaders(c, config);
   upstreamHeaders["content-type"] = "application/json";
-  // 覆盖 apiKey 与 per-agent 策略一致：agentUpstreamEntry.apiKey 优先，
-  // 否则透传客户端 Bearer。
-  if (agentUpstreamEntry) {
-    if (agentUpstreamEntry.apiKey) {
-      upstreamHeaders["authorization"] = `Bearer ${agentUpstreamEntry.apiKey}`;
-    }
-    // else: 保留 c.req.header('authorization') 里的客户端 key 透传
-  }
+  // v4.3+ 简化：命中 agent 配置时透传客户端原始 Bearer；否则 buildUpstreamHeaders
+  // 里由全局 upstream.apiKey 兜底。不再存在 per-agent apiKey 覆盖。
 
   pipe.forwardStart(upstreamUrl);
 

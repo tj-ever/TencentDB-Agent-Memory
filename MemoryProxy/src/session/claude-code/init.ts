@@ -28,6 +28,7 @@ import {
 } from "../context-injector.js";
 import type { MetadataClient } from "../../meta/client.js";
 import { resolvePresetIdentity, type PresetIdentity } from "../preset.js";
+import { createTrustedRegistration } from "../../custom/session-preset.js";
 
 import { buildFormResponse, FormData, MORE_LABEL } from "./form.js";
 import { computePagination } from "./pagination.js";
@@ -577,13 +578,16 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
+  serverPreset?: PresetIdentity,
+  agentSource: string = "claude-code",
 ): Promise<SessionInitResult> {
-  const compositeKey = `claude-code:${sessionKey}`;
+  // 上游别名也是会话隔离维度，必须与 handler 绑定的持久化身份一致。
+  const compositeKey = `${agentSource}:${sessionKey}`;
   const prevStatus = store.get(compositeKey)?.status ?? "uninitialized";
   try {
     return await handleSessionInitInner(
       sessionKey, userId, messages, config, store, reqCtx,
-      metadataClient, userKey, spaceId, presetIdentity,
+      metadataClient, userKey, spaceId, presetIdentity, serverPreset, agentSource,
     );
   } finally {
     // 无论正常/异常返回都尝试发一次埋点；装饰器内部自吞异常。
@@ -591,7 +595,7 @@ export async function handleSessionInit(
       store,
       compositeKey,
       prevStatus,
-      agentSource: "claude-code",
+      agentSource,
     });
   }
 }
@@ -607,8 +611,10 @@ async function handleSessionInitInner(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
+  serverPreset?: PresetIdentity,
+  agentSource: string = "claude-code",
 ): Promise<SessionInitResult> {
-  const compositeKey = `claude-code:${sessionKey}`;
+  const compositeKey = `${agentSource}:${sessionKey}`;
   if (sessionKey === "unknown" || !sessionKey) return { intercepted: false };
 
   const state = store.get(compositeKey);
@@ -715,6 +721,18 @@ async function handleSessionInitInner(
         bypassed: true,
       } as SessionInitState);
       return { intercepted: false, bypassed: true };
+    }
+
+    const trusted = createTrustedRegistration(serverPreset, sessionKey, userId);
+    if (trusted) {
+      console.log(
+        `[session-init:cc] session=${compositeKey} server preset → register team=${serverPreset?.teamId} agent=${serverPreset?.agentId}`,
+      );
+      return completeRegistration(
+        trusted.selection, trusted.state, trusted.teams, serverPreset?.teamId,
+        compositeKey, sessionKey, userId, config, store, reqCtx,
+        stripped, metadataClient, userKey, spaceId,
+      );
     }
 
     let teams: TeamOption[];

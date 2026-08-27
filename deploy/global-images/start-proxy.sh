@@ -17,8 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 
 load_env
+PROXY_VOLUME="${PROXY_VOLUME:-tdai-memory-proxy-data}"
 require_vars \
-  PROXY_IMAGE PROXY_PORT \
+  PROXY_IMAGE PROXY_PORT PROXY_VOLUME \
   PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL
 
 # 与 memory-core 保持一致的 gateway 内部凭据（默认 local，仅本地体验）
@@ -49,6 +50,9 @@ rm_container_if_exists "$CONTAINER"
 CONFIG_DIR="${PROXY_CONFIG_DIR:-$SCRIPT_DIR/.proxy-config}"
 mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
+# ① 运行期上游覆盖：主 config 只读；面板「Proxy 上游配置」写这个 override 文件（不随本脚本重生成，重部署也不丢）。
+OVERRIDE_FILE="$CONFIG_DIR/config.override.yaml"
+[[ -f "$OVERRIDE_FILE" ]] || printf 'upstream: {}\n' > "$OVERRIDE_FILE"
 
 # ── 三大能力开关（默认最小可用；打开时自动串联依赖）──
 # PROXY_ENABLE_AUTH        : 客户端凭 x-tdai-user-key 走内核 auth/verify → user_id
@@ -84,6 +88,15 @@ server:
 upstream:
   url: "${PROXY_UPSTREAM_URL}"
   apiKey: "${PROXY_UPSTREAM_API_KEY}"
+  model: "${PROXY_UPSTREAM_MODEL}"
+
+# 内部服务账号：命中 systemUsers 的请求走 passthrough（免路径身份、免注入）。
+# knowledge 用户的 userId 固定为 knowledge-service，Proxy 按 auth/verify 解析出的
+# user_id 匹配该账号。
+systemUsers:
+  - name: knowledge
+    userId: knowledge-service
+    displayName: "Knowledge Service"
 
 log:
   file: ""
@@ -146,7 +159,10 @@ $DOCKER run -d --name "$CONTAINER" \
   --network-alias proxy \
   --add-host=host.docker.internal:host-gateway \
   -p "${PROXY_PORT}:8096" \
+  -v "${PROXY_VOLUME}:/data/tdai-memory-proxy" \
   -v "$CONFIG_FILE:/data/config.yaml:ro" \
+  -v "$CONFIG_DIR:/data/runtime-config:rw" \
+  -e PROXY_OVERRIDE_CONFIG=/data/runtime-config/config.override.yaml \
   "$PROXY_IMAGE" >/dev/null
 
 wait_healthy "$CONTAINER" 90

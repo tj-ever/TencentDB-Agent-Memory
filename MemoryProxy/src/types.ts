@@ -347,26 +347,26 @@ export interface SkillRuntimeConfig {
 /**
  * Per-agent upstream override entry. When an agent (identified by URL path
  * prefix like "claude-code") needs a different upstream than the global
- * default, this struct provides the replacement `url` (and optional `apiKey`).
+ * default, this struct provides the replacement `url` and optional `model`.
  *
- * Fallback semantics — three cases, matching the runtime `effectiveApiKey`
- * resolution in `handler.ts` / `anthropicHandler.ts`:
+ * v4.3+ Key split: model key is always passthrough from the caller; per-agent
+ * apiKey no longer exists. Memory identity is carried via `x-tdai-user-key`.
+ *
+ * Fallback semantics:
  *
  *   ┌──────────────────────────────┬────────────┬──────────────────────────┐
  *   │ agent config                 │ url used   │ apiKey used              │
  *   ├──────────────────────────────┼────────────┼──────────────────────────┤
  *   │ NOT in agents map            │ upstream.url│ upstream.apiKey (global)│
- *   │ in map, url only, no apiKey  │ agent.url  │ passthrough client key  │
- *   │ in map, url + apiKey         │ agent.url  │ agent.apiKey            │
+ *   │ in agents map (url/model)    │ agent.url  │ passthrough client key  │
  *   └──────────────────────────────┴────────────┴──────────────────────────┘
  *
  * The presence of an entry cuts the global `upstream.apiKey` fallback —
- * this is intentional so an operator can run some agents on a server-side
- * key and others on the client's own key from a single proxy config.
+ * the caller must bring their own model key.
  *
  * Priority order (high → low):
  *   1. `costGuard`-provided `target.authHeaders`（cheap-model 兜底路由自带凭据）
- *   2. `upstream.agents[agent].url` + `upstream.agents[agent].apiKey`
+ *   2. `upstream.agents[agent].url` + passthrough client key
  *   3. `costGuard.anthropicUpstream.url`（仅 Anthropic 协议）
  *   4. `upstream.url` + `upstream.apiKey`（未命中 agent 时的默认）
  *
@@ -377,19 +377,40 @@ export interface SkillRuntimeConfig {
 export interface AgentUpstreamEntry {
   /** Target upstream base URL. Required. */
   url: string;
+  /** 该 agent 的默认模型（覆盖全局 upstream.model；空则用全局）。 */
+  model?: string;
   /**
-   * Per-agent apiKey. When set (non-empty):
-   *   - OpenAI: `Authorization: Bearer <apiKey>` is injected
-   *   - Anthropic: `x-api-key: <apiKey>` is injected
-   * When absent / empty: the client's own auth header is passed through
-   * upstream untouched. This does NOT fall back to `upstream.apiKey` —
-   * that fallback only applies when this agent has no entry at all.
+   * 该上游 agent 绑定到 Tencent 记忆里的一个 agent（team + agent + task）。
+   * 命中该上游路径（如 /dev-fw/）时，proxy 以这个受信身份直接注册 session 并注入
+   * 记忆。客户端不需要传内存身份头，但调用者必须是绑定 Team 的 active member。
+   * task_id 与飞书 bridge 的 x-task-id 同义：session-init 注入契约要求三者齐全，
+   * 缺 task_id 会触发 without task → bypass，不注入也不落 chat_memory。
    */
-  apiKey?: string;
+  binding?: { team_id: string; agent_id: string; task_id?: string };
+  /**
+   * 命中该 agent 时，服务端以其固定记忆账号身份替换调用方记忆身份。
+   * 开发者只用自己的模型 Key + 路径即可，无需传 x-tdai-user-key；
+   * 记忆注入 / 计费均归到这个 agent 记忆账号。
+   */
+  memory?: { key?: string; spaceId?: string };
+  /**
+   * 【已删除】Per-agent apiKey 字段。
+   *
+   * 开发者上游自 v4.3 起只做 URL 分流：模型认证用的 Key 一律由调用方自己
+   * 的请求头（x-api-key / Authorization）透传上游，proxy 不再配置/替换任何
+   * agent 级 Key。记忆身份则由独立的 x-tdai-user-key 请求头携带。
+   * 历史配置里的 apiKey 会在解析时静默忽略。
+   */
+  /** 已废弃字段（占位注释，防止误用）。 */
+  _?: never;
 }
 
 /** Top-level proxy configuration (merged from config file + CLI args). */
 export interface ProxyConfig {
+  /** 本实例加载的 YAML 配置路径（运行时上游配置写回此文件持久化）。 */
+  configPath: string;
+  /** 可选运行期覆盖配置路径：上游持久化写到这里（主 config 保持只读）。空 = 不启用。 */
+  overridePath: string;
   server: {
     host: string; // default: "0.0.0.0"
     port: number; // default: 8096
@@ -398,10 +419,17 @@ export interface ProxyConfig {
   };
   upstream: {
     url: string; // OpenAI-compatible upstream URL
-    apiKey: string; // 若非空则替换请求中的 API Key
+    apiKey: string; // 全局 Key：仅未命中 agent 配置的默认路由使用；命中 agent 时一律透传客户端 Key
+    /** 提供方默认模型名；配置后覆盖客户端请求模型。 */
+    model?: string;
+    /** 模型是否支持识图。false（默认，文本模型）→ 转发前剥掉会话里的 image 内容块，避免 text-only 模型 400。 */
+    supportsImages?: boolean;
     /**
      * Per-agent overrides keyed by agent name (URL path prefix, e.g. "claude-code").
-     * Empty / missing entry → agent falls back to `url` + `apiKey`.
+     * v4.3+ Key split: agent entries only do URL routing; model key is always
+     * passthrough from the caller. An entry without a configured url falls back
+     * to the global `upstream.url`. The presence of an entry cuts the global
+     * `upstream.apiKey` fallback — the caller must bring their own model key.
      */
     agents: Record<string, AgentUpstreamEntry>;
   };
@@ -690,8 +718,10 @@ export interface RawYamlConfig {
   upstream?: {
     url?: string;
     apiKey?: string;
+    model?: string;
+    supportsImages?: boolean;
     /** Per-agent override map. See `AgentUpstreamEntry`. */
-    agents?: Record<string, { url?: string; apiKey?: string } | null | undefined>;
+    agents?: Record<string, { url?: string; apiKey?: string; model?: string; binding?: { team_id?: string; agent_id?: string; task_id?: string }; memory?: { key?: string; spaceId?: string } } | null | undefined>;
   };
   log?: {
     file?: string;

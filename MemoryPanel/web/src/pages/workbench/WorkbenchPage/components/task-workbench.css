@@ -55,6 +55,14 @@
   gap: 12px;
 }
 
+@media (max-width: 768px) {
+  /* 窄屏单列，避免 300px minmax 在手机上横向溢出 */
+  ._memory-workbench-task-grid,
+  ._memory-workbench-skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 ._memory-workbench-task-card {
   display: flex;
   flex-direction: column;

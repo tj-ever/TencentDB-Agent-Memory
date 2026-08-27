@@ -12,6 +12,8 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const DEFAULT_CLAUDE = process.env.CLAUDE_BIN || 'claude';
 const EMBED_SCRIPT = join(__dirname, '..', 'scripts', 'embed-prototype.mjs');
 
+const BASE_REQUIREMENTS = '始终使用简体中文回复用户，不要用英文或中英混杂。';
+
 function defaultRules(name: string): string {
   return `你是「${name}」飞书机器人，只服务当前用户关于本项目的问答。
 
@@ -33,17 +35,33 @@ type Delta =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string }
   | { kind: 'assistant'; content: Array<Record<string, unknown>> }
-  | { kind: 'result'; text: string };
+  | { kind: 'result'; text: string }
+  | { kind: 'retry'; attempt: number; maxRetries: number; status: number; delayMs: number };
 
 /** 从 claude stream-json 一行里抽出要展示的增量。 */
 export function extractStreamDelta(evt: unknown): Delta | null {
   if (!evt || typeof evt !== 'object') return null;
   const outer = evt as {
     type?: string;
+    subtype?: string;
     event?: unknown;
     message?: { content?: unknown };
     result?: unknown;
+    attempt?: number;
+    max_retries?: number;
+    error_status?: number;
+    retry_delay_ms?: number;
   };
+  // 上游限流/网络错误重试：headless stream-json 会发 system/api_retry 事件。
+  if (outer.type === 'system' && outer.subtype === 'api_retry') {
+    return {
+      kind: 'retry',
+      attempt: outer.attempt ?? 0,
+      maxRetries: outer.max_retries ?? 0,
+      status: outer.error_status ?? 0,
+      delayMs: outer.retry_delay_ms ?? 0,
+    };
+  }
   const ev = (outer.type === 'stream_event' ? outer.event : evt) as {
     type?: string;
     delta?: { text?: string };
@@ -90,7 +108,7 @@ export interface ClaudeRunner {
 export function createClaudeRunner({
   baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none',
 }: ClaudeRunnerOptions): ClaudeRunner {
-  const rules = systemRules || defaultRules(name);
+  const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name)].join('\n\n');
   const MAX_RETRIES = 2;
 
   function attempt(
@@ -119,6 +137,9 @@ export function createClaudeRunner({
         FEISHU_CHAT_ID: chatId || '',
         FEISHU_EMBED_PROTOTYPE: EMBED_SCRIPT,
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '500000',
+        // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
+        // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。
+        CLAUDE_CODE_MAX_RETRIES: process.env.CLAUDE_CODE_MAX_RETRIES || '10',
       };
 
       const extra = sessionArgv(workDir, sessionId);
@@ -159,6 +180,13 @@ export function createClaudeRunner({
         }
         if (delta.kind === 'tool') {
           emit(`\n\n_调用 ${delta.name}…_\n\n`);
+          return;
+        }
+        if (delta.kind === 'retry') {
+          const s = delta.status === 429 ? '上游限流(429)' : `上游错误(${delta.status || '网络'})`;
+          const wait = delta.delayMs ? `，${Math.round(delta.delayMs / 1000)}s 后` : '，';
+          const n = delta.maxRetries ? `第 ${delta.attempt}/${delta.maxRetries} 次` : `第 ${delta.attempt} 次`;
+          emit(`\n\n_${s}${wait}重试（${n}）…_\n\n`);
           return;
         }
         if (delta.kind === 'assistant' && !gotPartial) {

@@ -17,7 +17,8 @@ import {
 } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { HelpCircleIcon } from 'tea-icons-react';
-import { channelsApi, type ChannelBot, type ChannelDraft } from '@/lib/api/channels';
+import { channelsApi, type ChannelBot, type ChannelDraft } from '@/custom/api/channels';
+import { SessionManager } from '@/custom/channels/SessionManager';
 import { tasksApi } from '@/lib/api/tasks';
 import { tea } from '@/lib/tea-bridge';
 import { useAgents, useTeams } from '@/stores/backend';
@@ -58,7 +59,6 @@ const EMPTY: ChannelDraft = {
     stream_initial_text: '思考中…',
     policy: { requireMention: true, dmMode: 'open' },
   },
-  llm: { model: 'grok-4.6' },
   session_mode: 'none',
   system_prompt: '',
 };
@@ -72,6 +72,7 @@ export function ChannelsPage() {
   const [bots, setBots] = useState<ChannelBot[]>([]);
   const [loading, setLoading] = useState(false);
   const [bridgeDown, setBridgeDown] = useState(false);
+  const [sessTarget, setSessTarget] = useState<ChannelBot | null>(null);
   const [editing, setEditing] = useState<ChannelBot | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<ChannelDraft>(EMPTY);
@@ -132,7 +133,6 @@ export function ChannelsPage() {
       memory: { ...bot.memory, user_key: '' },
       binding: { ...bot.binding },
       feishu: { ...bot.feishu, app_secret: '' },
-      llm: { ...bot.llm },
       session_mode: bot.session_mode,
       system_prompt: bot.system_prompt,
     });
@@ -274,7 +274,14 @@ export function ChannelsPage() {
                       disabled={busy}
                       onClick={() => toggle(b)}
                     >
-                      {b.status === 'running' ? t('channels.stop') : t('channels.start')}
+                      {startStopBusy
+                        ? t('channels.processing')
+                        : b.status === 'running'
+                          ? t('channels.stop')
+                          : t('channels.start')}
+                    </Button>
+                    <Button type="link" disabled={busy} onClick={() => setSessTarget(b)}>
+                      {t('channels.sess')}
                     </Button>
                     <Button type="link" disabled={busy} onClick={() => openEdit(b)}>
                       {t('channels.edit')}
@@ -282,11 +289,6 @@ export function ChannelsPage() {
                     <Button type="link" loading={deleteBusy} disabled={busy} onClick={() => remove(b)}>
                       {t('channels.delete')}
                     </Button>
-                    {busy && (
-                      <Text theme="weak" parent="span" style={{ marginLeft: 6 }}>
-                        {t('channels.processing')}
-                      </Text>
-                    )}
                   </>
                 );
               },
@@ -294,6 +296,8 @@ export function ChannelsPage() {
           ]}
         />
       </Card.Body>
+
+      {sessTarget && <SessionManager bot={sessTarget} onClose={() => setSessTarget(null)} />}
 
       <Modal
         visible={creating}
@@ -337,24 +341,6 @@ export function ChannelsPage() {
                 onChange={(v) => setForm({ ...form, session_mode: v as ChannelDraft['session_mode'] })}
               />
             </Form.Item>
-            <Form.Item label={<HelpLabel text={t('channels.field.model')} help={t('channels.help.model')} />}>
-              <Input value={form.llm.model} onChange={(v) => setForm({ ...form, llm: { model: v } })} />
-            </Form.Item>
-            <Form.Item label={<HelpLabel text={t('channels.field.proxy')} help={t('channels.help.proxy')} />}>
-              <Input
-                placeholder="http://tdai-proxy:8096"
-                value={form.memory.proxy_base_url}
-                onChange={(v) => setForm({ ...form, memory: { ...form.memory, proxy_base_url: v } })}
-              />
-            </Form.Item>
-            <Form.Item label={<HelpLabel text={t('channels.field.userKey')} help={t('channels.help.userKey')} />}>
-              <Input
-                type="password"
-                placeholder={editing ? t('channels.keepSecret') : 'sk-mem-…'}
-                value={form.memory.user_key}
-                onChange={(v) => setForm({ ...form, memory: { ...form.memory, user_key: v } })}
-              />
-            </Form.Item>
             <Form.Item label={<HelpLabel text={t('channels.field.appId')} help={t('channels.help.appId')} />}>
               <Input
                 value={form.feishu.app_id}
@@ -368,6 +354,9 @@ export function ChannelsPage() {
                 value={form.feishu.app_secret}
                 onChange={(v) => setForm({ ...form, feishu: { ...form.feishu, app_secret: v } })}
               />
+            </Form.Item>
+            <Form.Item label={<HelpLabel text={t('channels.field.initialText')} help={t('channels.help.initialText')} />}>
+              <Input value={form.feishu.stream_initial_text} onChange={(v) => setForm({ ...form, feishu: { ...form.feishu, stream_initial_text: v } })} />
             </Form.Item>
             <Form.Item label={<HelpLabel text={t('channels.field.requireMention')} help={t('channels.help.requireMention')} />}>
               <Switch

@@ -32,6 +32,8 @@ export interface PanelConfig {
   };
   /** custom: Feishu MemoryBridge HTTP API */
   bridge: { baseUrl: string };
+  /** MemoryProxy (tdai-proxy :8096)：Proxy 上游配置卡片经它读写运行时上游。 */
+  proxy: { baseUrl: string; publicUrl: string };
 }
 
 function envBool(key: string, fallback: boolean): boolean {
@@ -66,6 +68,10 @@ export function loadPanelConfig(): PanelConfig {
     },
     bridge: {
       baseUrl: env('MEMORY_BRIDGE_URL', 'http://127.0.0.1:8130'),
+    },
+    proxy: {
+      baseUrl: env('MEMORY_PROXY_URL', 'http://127.0.0.1:8096'),
+      publicUrl: env('MEMORY_HUB_PROXY_PUBLIC_URL', ''),
     },
   };
 }

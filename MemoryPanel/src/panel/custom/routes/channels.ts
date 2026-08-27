@@ -5,8 +5,8 @@
  */
 import type { Hono } from 'hono';
 import type { PanelDeps } from '../../panel-deps.js';
-import { validatePanelMetaHeaders } from '../middleware/validate-panel-headers.js';
-import { respondControlError, respondEnvelope } from '../envelope.js';
+import { validatePanelMetaHeaders } from '../../http/middleware/validate-panel-headers.js';
+import { respondControlError, respondEnvelope } from '../../http/envelope.js';
 
 function ok<T>(c: Parameters<typeof respondEnvelope>[0], data: T) {
   return respondEnvelope(c, { code: 0, message: 'ok', request_id: c.get('reqId') ?? '', data });
@@ -33,6 +33,17 @@ export function registerChannelRoutes(api: Hono, deps: PanelDeps): void {
     const msg = err instanceof Error ? err.message : String(err);
     deps.logger.warn('memory-bridge unavailable', { err: msg });
     return respondControlError(c, 503, 'BRIDGE_UNAVAILABLE');
+  };
+
+  const relay = async (c: Parameters<typeof respondControlError>[0], method: string, path: string) => {
+    try {
+      const out = await bridge(deps, method, path);
+      if (!out.json) return respondControlError(c, 502, out.text.slice(0, 200));
+      if (out.json.code !== 0) return respondControlError(c, out.json.code ?? 400, out.json.message || 'error');
+      return ok(c, out.json.data);
+    } catch (err) {
+      return unavailable(c, err);
+    }
   };
 
   api.get('/channels', async (c) => {
@@ -80,16 +91,16 @@ export function registerChannelRoutes(api: Hono, deps: PanelDeps): void {
     }
   });
 
-  api.post('/channels/:id/:action', async (c) => {
-    const action = c.req.param('action');
-    if (action !== 'start' && action !== 'stop') return respondControlError(c, 404, 'NOT_FOUND');
-    try {
-      const out = await bridge(deps, 'POST', `/api/bots/${encodeURIComponent(c.req.param('id'))}/${action}`);
-      if (!out.json) return respondControlError(c, 502, out.text.slice(0, 200));
-      if (out.json.code !== 0) return respondControlError(c, out.json.code ?? 400, out.json.message || 'error');
-      return ok(c, out.json.data);
-    } catch (err) {
-      return unavailable(c, err);
-    }
-  });
+  api.post('/channels/:id/start', (c) =>
+    relay(c, 'POST', `/api/bots/${encodeURIComponent(c.req.param('id'))}/start`));
+  api.post('/channels/:id/stop', (c) =>
+    relay(c, 'POST', `/api/bots/${encodeURIComponent(c.req.param('id'))}/stop`));
+
+  // ── 会话管理（队列状态 / 中止当前任务 / 清空会话）──
+  api.get('/channels/:id/sessions', (c) =>
+    relay(c, 'GET', `/api/bots/${encodeURIComponent(c.req.param('id'))}/sessions`));
+  api.post('/channels/:id/abort', (c) =>
+    relay(c, 'POST', `/api/bots/${encodeURIComponent(c.req.param('id'))}/abort`));
+  api.post('/channels/:id/sessions/:sid/clear', (c) =>
+    relay(c, 'POST', `/api/bots/${encodeURIComponent(c.req.param('id'))}/sessions/${encodeURIComponent(c.req.param('sid'))}/clear`));
 }
