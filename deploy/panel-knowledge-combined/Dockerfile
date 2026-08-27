@@ -3,6 +3,8 @@ FROM node:22-slim AS base
 # apt 源默认走 Debian 官方，公网可直接构建。内网构建加速：
 #   docker build --build-arg APT_MIRROR=mirrors.tencent.com .
 ARG APT_MIRROR=deb.debian.org
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list 2>/dev/null || true; \
@@ -22,14 +24,17 @@ WORKDIR /app
 FROM base AS panel-ui-builder
 WORKDIR /build/panel-web
 COPY panel/web/package*.json ./
-RUN npm install --no-audit --no-fund
+# npm cache mount（共享 id）：跨构建复用下载缓存；有 lock 用 npm ci 锁定直装
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund || npm install --prefer-offline --no-audit --no-fund
 COPY panel/web/ ./
 RUN npm run build
 
 FROM base AS panel-builder
 WORKDIR /build/panel
 COPY panel/package*.json ./
-RUN npm install --no-audit --no-fund
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund || npm install --prefer-offline --no-audit --no-fund
 COPY panel/ ./
 COPY --from=panel-ui-builder /build/panel-web/dist ./web/dist
 RUN npm run build
@@ -37,7 +42,8 @@ RUN npm run build
 FROM base AS knowledge-builder
 WORKDIR /build/knowledge
 COPY knowledge/package*.json ./
-RUN npm install --no-audit --no-fund
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund || npm install --prefer-offline --no-audit --no-fund
 COPY knowledge/ ./
 RUN npm run build
 

@@ -34,6 +34,10 @@ RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list 2>/dev/null || true; \
     fi
 
+# 国内构建加速：--build-arg NPM_REGISTRY=https://registry.npmmirror.com （默认官方源）
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+
 # Native build toolchain (sqlite-vec, @node-rs/jieba etc.)
 # 使用 BuildKit cache mount 缓存 apt 包，避免重复下载
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -78,7 +82,7 @@ RUN node -e " \
 # --ignore-scripts skips the openclaw postinstall patch (irrelevant in image).
 # --legacy-peer-deps relaxes strict peer resolution for older transitive deps.
 # 使用 BuildKit cache mount 缓存 npm 下载缓存，大幅加速重复构建
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
     npm install \
         --omit=dev \
         --omit=optional \
@@ -95,7 +99,7 @@ RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
 # （@esbuild/linux-x64 / @esbuild/linux-arm64）本身就是 optionalDependency，
 # 加了会导致运行时报 "The package @esbuild/linux-x64 could not be found"。
 # 允许 dev 也不影响：esbuild 本身没有 devDep。
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
     npm install \
         --no-save \
         --ignore-scripts \
@@ -117,6 +121,8 @@ COPY . .
 FROM node:22-slim AS runtime
 
 ARG APT_MIRROR=deb.debian.org
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list 2>/dev/null || true; \

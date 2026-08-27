@@ -10,6 +10,10 @@
 #   - 最小中文字体 fonts-wqy-zenhei（~9MB；不装 noto 全量，原型文字能渲染即可）
 FROM node:22-bookworm-slim
 
+# 国内构建加速：--build-arg NPM_REGISTRY=https://registry.npmmirror.com （默认官方源）
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+
 # Claude 执行代码与飞书交付所需的最小工具集。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -21,12 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # claude CLI：容器内 headless 执行 claude -p
-RUN npm install -g @anthropic-ai/claude-code
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
+    npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 # PUPPETEER_SKIP_DOWNLOAD=1：截图用发行版 chromium，不下载 Chrome-for-Testing
-RUN PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
+    PUPPETEER_SKIP_DOWNLOAD=1 npm ci
 COPY tsconfig.json vitest.config.ts ./
 COPY src ./src
 COPY scripts ./scripts

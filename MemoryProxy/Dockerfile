@@ -29,6 +29,9 @@ FROM node:22-slim AS deps-builder
 
 # Native build toolchain（better-sqlite3 / node-pty 需要编译）
 # 使用 BuildKit cache mount 缓存 apt 包，避免重复下载
+# 国内构建加速：--build-arg NPM_REGISTRY=https://registry.npmmirror.com （默认官方源）
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -49,7 +52,7 @@ COPY package.json package-lock.json ./
 
 # 安装全部依赖（保留 dev：tsx 运行时需要；保留 optional：sqlite/cos/cost-guard）。
 # 使用 BuildKit npm cache mount 大幅加速重复构建。
-RUN --mount=type=cache,id=proxy-npm-cache,target=/root/.npm \
+RUN --mount=type=cache,id=shared-npm-cache,target=/root/.npm,sharing=locked \
     npm install \
         --no-audit \
         --no-fund
