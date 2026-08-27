@@ -75,7 +75,7 @@ export function extractSpaceIdFromPath(path: string, knownAgents?: ReadonlySet<s
   if (match) {
     const agent = safePath.split("/").filter(Boolean)[0] ?? "";
     // Only capture spaceId when the first segment looks like an agent name
-    if (/^(claude-code|codebuddy|codex|cursor|hermes|openclaw|workbuddy|dsh)$/i.test(agent) || knownAgents?.has(agent)) {
+    if (/^(claude-code|codebuddy|codex|cursor|hermes|openclaw|workbuddy|dsh|opencode)$/i.test(agent) || knownAgents?.has(agent)) {
       return match[1] || null;
     }
   }

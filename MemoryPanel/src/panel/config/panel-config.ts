@@ -34,6 +34,8 @@ export interface PanelConfig {
   bridge: { baseUrl: string };
   /** MemoryProxy (tdai-proxy :8096)：Proxy 上游配置卡片经它读写运行时上游。 */
   proxy: { baseUrl: string; publicUrl: string };
+  /** 默认 Agent 模板文件的本地存储目录根（存 Panel 本地，按 {dir}/{instanceId}/{team_id}/template.json）。 */
+  agentTemplateDir: string;
 }
 
 function envBool(key: string, fallback: boolean): boolean {
@@ -73,5 +75,6 @@ export function loadPanelConfig(): PanelConfig {
       baseUrl: env('MEMORY_PROXY_URL', 'http://127.0.0.1:8096'),
       publicUrl: env('MEMORY_HUB_PROXY_PUBLIC_URL', ''),
     },
+    agentTemplateDir: env('TDAI_AGENT_TEMPLATE_DIR', './data/agent-templates'),
   };
 }

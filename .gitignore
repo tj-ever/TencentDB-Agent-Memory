@@ -135,3 +135,7 @@ coverage/
 
 # Local runtime backups (DB snapshots, not for VCS)
 .backup-*/
+
+# Local-only: parity snapshots & runtime configs (never commit)
+MemoryProxy/.archive-tmp/
+z_config/
