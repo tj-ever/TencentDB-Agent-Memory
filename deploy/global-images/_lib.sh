@@ -328,6 +328,13 @@ set_env_value() {
 interactive_llm_setup() {
   local base key model proto reuse_same
 
+  # LLM_CHECK_WARN_ONLY=1：预检失败仅警告不阻断（如 BASE_URL 用 host.docker.internal、
+  # 宿主机上测不通但容器内可通的部署形态）。跳过全部交互提问，直接用 .env 现值。
+  if [[ "${LLM_CHECK_WARN_ONLY:-0}" == "1" ]]; then
+    warn "LLM_CHECK_WARN_ONLY=1：跳过交互式配置与硬性通路检查"
+    return 0
+  fi
+
   echo ""
   info "═══ 交互式配置 LLM（回车 = 保留当前值） ═══════════════════"
 

@@ -1,10 +1,12 @@
 import { log } from "../report/log.js";
 import type { AgentUpstreamEntry, ProxyConfig, RawYamlConfig } from "../types.js";
 import type { PresetIdentity } from "../session/preset.js";
+import { verifyUserKey } from "../auth.js";
+import type { VerifyUserResult } from "../auth.js";
 
 const RESERVED_PATHS = new Set(["v1", "proxy", "skill-bridge", "memory-bridge"]);
 const BUILTIN_AGENTS = new Set([
-  "claude-code", "codebuddy", "codex", "cursor", "hermes", "openclaw", "workbuddy", "dsh",
+  "claude-code", "codebuddy", "codex", "cursor", "hermes", "openclaw", "workbuddy", "dsh", "opencode",
 ]);
 
 export interface UpstreamRoute {
@@ -144,4 +146,52 @@ export function trustedPreset(route: UpstreamRoute): PresetIdentity | undefined 
     agentId: binding.agent_id,
     ...(binding.task_id ? { taskId: binding.task_id } : {}),
   } : undefined;
+}
+
+/** 内置 agent 名单的唯一权威（credit-reporter 等也引用，勿在别处再拷贝正则）。 */
+export function isBuiltinAgent(name: string): boolean {
+  return BUILTIN_AGENTS.has(name);
+}
+
+export interface EarlyAuthResult {
+  upstreamRoute: UpstreamRoute;
+  pathSpaceId: string;
+  memoryKey: string;
+  spaceId: string;
+  verify: VerifyUserResult;
+  /** 两个 handler 的 early-auth 块完全同构，仅错误响应格式不同——由调用方传入。 */
+  errors: {
+    unauthorized(reason: string): Response;
+    forbidden(): Response;
+  };
+}
+
+/**
+ * 各 handler 的前置认证公共流程：路由解析 → 记忆身份解析 → user key 校验 →
+ * agent binding 授权。任一步失败直接返回错误 Response。
+ */
+export async function earlyAuth(
+  c: { req: { path: string; header(name: string): string | undefined } },
+  config: ProxyConfig,
+  apiKey: string,
+  errors: EarlyAuthResult["errors"],
+): Promise<EarlyAuthResult | Response> {
+  const upstreamRoute = resolveUpstreamRoute(config, c.req.path);
+  const pathSpaceId = upstreamRoute.spaceId;
+  const identity = resolveMemoryIdentity(upstreamRoute, c.req.header("x-tdai-user-key"), apiKey, pathSpaceId);
+  const verify = await verifyUserKey(identity.memoryKey, identity.spaceId);
+  if (verify.rejected) {
+    return errors.unauthorized(`Authentication failed: ${verify.rejectReason ?? "unknown"}`);
+  }
+  if (!(await isAgentBindingAuthorized(upstreamRoute, identity.memoryKey, verify.userId, config))) {
+    return errors.forbidden();
+  }
+  return {
+    upstreamRoute,
+    pathSpaceId,
+    memoryKey: identity.memoryKey,
+    spaceId: identity.spaceId,
+    verify,
+    errors,
+  };
 }

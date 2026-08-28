@@ -33,13 +33,12 @@ import {
 import { hasCostGuardMarker, matchWhitelistEndpoint } from "./routes/whitelist.js";
 import { writeRequestLog } from "./requestLog.js";
 import { prepareUpstreamRequest, notifyUpstreamResponse } from "./request-prepare-adapter.js";
-import { tryReportCreditFromPath, extractSpaceIdFromPath } from "./credit-reporter.js";
+import { tryReportCreditFromPath } from "./credit-reporter.js";
 import { resolveModelId, isModelInPricing } from "./pricing.js";
 import { inspectAndRecord } from "./identity.js";
 import { writeFailedReportRaw } from "./clickhouse.js";
-import { verifyUserKey } from "./auth.js";
 import { stripUnsupportedImages } from "./custom/request-body.js";
-import { isAgentBindingAuthorized, resolveMemoryIdentity, resolveUpstreamRoute } from "./custom/upstream.js";
+import { earlyAuth } from "./custom/upstream.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "./systemUser.js";
 import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { TdaiClient } from "./tdai/client.js";
@@ -451,29 +450,16 @@ export async function handleChatCompletions(
 
   // ── Early auth ──────────────────────────────────────────────────────────
   // Verify BEFORE parsing the body so a rejected caller never triggers body
-  // parsing or the alias-gate. `earlyVerify.userId` is reused later for
+  // parsing or the alias-gate. `auth.verify.userId` is reused later for
   // both the systemUser short-circuit and the normal pipeline.
   const earlyAuthHeader = c.req.header("authorization") ?? c.req.header("Authorization") ?? "";
   const earlyApiKey = extractBearerToken(earlyAuthHeader);
-  // 记忆身份：命中带 memory 配置的绑定 agent 时用 agent 固定记忆账号覆盖调用方；
-  // 否则回退 x-tdai-user-key / 模型 Key。模型 Key 始终仅用于上游 LLM 认证。
-  const upstreamRoute = resolveUpstreamRoute(config, c.req.path);
-  const pathSpaceId = upstreamRoute.spaceId || extractSpaceIdFromPath(c.req.path) || "";
-  const earlyMemoryIdentity = resolveMemoryIdentity(
-    upstreamRoute,
-    c.req.header("x-tdai-user-key"),
-    earlyApiKey,
-    pathSpaceId,
-  );
-  const earlyMemoryKey = earlyMemoryIdentity.memoryKey;
-  const earlySpaceId = earlyMemoryIdentity.spaceId;
-  const earlyVerify = await verifyUserKey(earlyMemoryKey, earlySpaceId);
-  if (earlyVerify.rejected) {
-    return c.json({ error: `Authentication failed: ${earlyVerify.rejectReason ?? "unknown"}` }, 401);
-  }
-  if (!(await isAgentBindingAuthorized(upstreamRoute, earlyMemoryKey, earlyVerify.userId, config))) {
-    return c.json({ error: "Agent upstream access denied" }, 403);
-  }
+  const auth = await earlyAuth(c, config, earlyApiKey, {
+    unauthorized: (reason) => c.json({ error: reason }, 401),
+    forbidden: () => c.json({ error: "Agent upstream access denied" }, 403),
+  });
+  if (auth instanceof Response) return auth;
+  const { upstreamRoute, memoryKey: earlyMemoryKey, spaceId: earlySpaceId, verify: earlyVerify } = auth;
 
   // ── Parse body ──────────────────────────────────────────────────────────
   // Body is parsed BEFORE the systemUser short-circuit so the alias-gate and
@@ -669,7 +655,7 @@ export async function handleChatCompletions(
   // 记忆身份 Key：早期段已解析（agent 固定记忆账号或调用方 header），
   // 用于 kernel /v3/meta/* 鉴权及 memory command 执行。模型 Key 仅用于
   // 上游 LLM 认证 + trace keyId 命名。
-  const memoryKey = earlyMemoryIdentity.memoryKey;
+  const memoryKey = earlyMemoryKey;
 
   // ── Lowercased headers for agent profile detection + session key ──────────
   const lcHeaders: Record<string, string> = {};

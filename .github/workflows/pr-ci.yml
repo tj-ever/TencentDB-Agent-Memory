@@ -14,6 +14,45 @@ defaults:
     working-directory: MemoryCore
 
 jobs:
+  # ── 0. 二开代码（custom/）类型与测试 ────────────────────────
+  # MemoryProxy 有 55 个上游自带的 typecheck 错误（v2.0.1 发版即存在），
+  # 无法直接跑 tsc --noEmit 作门禁，故只测二开文件：跳过已知错误文件，
+  # 只要错误数 > 基线即失败。MemoryBridge / MemoryPanel 零错误可直接门禁。
+  custom-code:
+    name: Custom Code (Bridge/Proxy/Panel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: MemoryBridge typecheck + test
+        working-directory: MemoryBridge
+        run: |
+          npm install --ignore-scripts
+          npm run typecheck
+          npm test
+
+      - name: MemoryProxy custom typecheck (error-count gate)
+        working-directory: MemoryProxy
+        run: |
+          npm install --ignore-scripts
+          COUNT=$(npx tsc --noEmit 2>&1 | grep -c "error TS" || true)
+          echo "MemoryProxy typecheck errors: ${COUNT} (baseline 55)"
+          if [ "${COUNT:-0}" -gt 55 ]; then
+            echo "❌ New typecheck errors introduced"
+            npx tsc --noEmit 2>&1 | grep "error TS" | sort > current.txt
+            exit 1
+          fi
+
+      - name: MemoryPanel web typecheck
+        working-directory: MemoryPanel/web
+        run: |
+          npm install --ignore-scripts
+          npx tsc --noEmit
+
   # ── 1. Install dependencies ────────────────────────────────
   install:
     name: Install
