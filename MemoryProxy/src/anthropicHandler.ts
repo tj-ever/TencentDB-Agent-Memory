@@ -1954,13 +1954,26 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
     // 之前的实现只读了 (1) 里的 input（永远空）—— 现在按 index 累加 (2) 里的 partial_json。
     const toolUseAcc = new Map<number, { id: string; name: string; inputJson: string }>();
 
-    const timeoutHandle = setTimeout(() => {
+    // 空闲看门狗而非总时长死线：每收到上游数据就重置。固定 5 分钟总超时会在
+    // 上游冷启动（模型重新加载首字节 >5min）或长生成时误杀正常流。
+    const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+    let timeoutHandle: ReturnType<typeof setTimeout> = setTimeout(() => {
       if (!streamCompleted) {
-        pipe.error("STREAM_TIMEOUT", "Anthropic stream reading exceeded 5 minutes");
+        pipe.error("STREAM_TIMEOUT", `Anthropic stream idle for ${STREAM_IDLE_TIMEOUT_MS / 60000} minutes`);
         // completeStream 是 async；这里 fire-and-forget（timeout 里已经无法 await）
         void completeStream().catch((err) => pipe.error("STREAM_TIMEOUT_COMPLETE", err));
       }
-    }, 5 * 60 * 1000);
+    }, STREAM_IDLE_TIMEOUT_MS);
+    const resetIdleWatchdog = (): void => {
+      if (streamCompleted) return;
+      clearTimeout(timeoutHandle);
+      timeoutHandle = setTimeout(() => {
+        if (!streamCompleted) {
+          pipe.error("STREAM_TIMEOUT", `Anthropic stream idle for ${STREAM_IDLE_TIMEOUT_MS / 60000} minutes`);
+          void completeStream().catch((err) => pipe.error("STREAM_TIMEOUT_COMPLETE", err));
+        }
+      }, STREAM_IDLE_TIMEOUT_MS);
+    };
 
     async function completeStream(): Promise<void> {
       if (streamCompleted) return;
@@ -2193,6 +2206,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
         const { done, value } = await reader.read();
         if (done) break;
 
+        resetIdleWatchdog();
         sseBuf += decoder.decode(value, { stream: true });
 
         const parts = sseBuf.split("\n\n");
