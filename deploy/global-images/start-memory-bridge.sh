@@ -4,10 +4,11 @@
 # 与三件套同网络（tdai-memory-stack）：bridge -> tdai-proxy:8096，
 # 面板容器通过 http://tdai-memory-bridge:8130 反代（start-memory-hub.sh 注入）。
 #
-# 镜像本地构建（无公网镜像），代码变更后重跑本脚本即可重建。
+# 镜像本地构建（无公网镜像）。自动判断：本地已有该镜像则复用，没有才构建；
+# 改了 MemoryBridge 代码想强制重建时用 FORCE_BUILD=1。
 # 用法：
 #   ./start-memory-bridge.sh
-#   SKIP_BUILD=1 ./start-memory-bridge.sh   # 不重建镜像，直接用本地已有的
+#   FORCE_BUILD=1 ./start-memory-bridge.sh  # 改了代码后强制重建镜像
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,9 +45,11 @@ if ! $DOCKER ps --format '{{.Names}}' 2>/dev/null | grep -qx "tdai-proxy"; then
   warn "tdai-proxy 容器未运行，机器人的 claude -p 将无法连到记忆 proxy。"
 fi
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+if [[ "${FORCE_BUILD:-0}" == "1" ]] || ! $DOCKER image inspect "$BRIDGE_IMAGE" >/dev/null 2>&1; then
   info "构建镜像 ${BRIDGE_IMAGE}（首次较慢：安装 claude CLI + Chromium）"
   $DOCKER build -t "$BRIDGE_IMAGE" "$SCRIPT_DIR/../../MemoryBridge" || die "构建 $BRIDGE_IMAGE 失败。"
+else
+  info "复用本地镜像 ${BRIDGE_IMAGE}（改代码后 FORCE_BUILD=1 重建）"
 fi
 
 rm_container_if_exists "$CONTAINER"
