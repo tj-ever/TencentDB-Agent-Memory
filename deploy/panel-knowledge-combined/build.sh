@@ -128,7 +128,7 @@ echo "[build-combined] docker build --platform $PLATFORM -t $IMAGE_NAME:$IMAGE_T
 # 默认走国内镜像源加速；需要官方源时显式传 APT_MIRROR/NPM_REGISTRY 覆盖
 docker build \
   --platform "$PLATFORM" \
-  --build-arg APT_MIRROR="${APT_MIRROR:-deb.debian.org}" \
+  --build-arg APT_MIRROR="${APT_MIRROR:-mirrors.tencent.com}" \
   --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}" \
   -t "$IMAGE_NAME:$IMAGE_TAG" "$CTX_DIR"
 

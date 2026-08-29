@@ -37,6 +37,9 @@ yarn.lock
 test-offload.sh
 test-offload-mmd.sh
 test-offload-sessions.sh
+# MemoryBridge 的 lock 必须入库：Dockerfile 的 npm ci 依赖它，
+# 缺失会导致全新 clone 构建失败（cache key "/package-lock.json": not found）
+!MemoryBridge/package-lock.json
 
 # npm pack / release tarballs (never commit packaged outputs)
 dist-pack/
