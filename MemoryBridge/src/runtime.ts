@@ -226,8 +226,11 @@ export function statusOf(id: string): BotRunState {
 }
 
 export async function startBot(id: string): Promise<BotRunState> {
+  // error 残留条目不短路：auto-start 失败后（如启动时出口网络未就绪）允许直接重试，
+  // 否则面板点「启动」永远只返回旧错误，必须先 stop 再 start 才能恢复。
   const existing = running.get(id);
-  if (existing) return statusOf(id);
+  if (existing && !existing.error) return statusOf(id);
+  running.delete(id);
   const bot = getBot(id);
   if (!bot) throw new Error('BOT_NOT_FOUND');
   mkdirSync(bot.work_dir, { recursive: true });
@@ -292,13 +295,25 @@ export async function stopBot(id: string): Promise<BotRunState> {
 export async function startEnabled() {
   for (const bot of listBots()) {
     if (!bot.enabled) continue;
+    await startWithRetry(bot.id);
+  }
+}
+
+// auto-start 失败退避重试：容器启动时出口网络/Proxy 可能尚未就绪（如 mihomo-egress 同批启动），
+// 直接放弃会让 enabled 机器人一直离线且无自愈。指数退避，最多 5 次约 2 分钟。
+async function startWithRetry(id: string, maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await startBot(bot.id);
+      await startBot(id);
+      return;
     } catch (err) {
-      console.error(`[${bot.id}] auto-start failed:`, err instanceof Error ? err.message : String(err));
-      running.set(bot.id, { channel: null, error: err instanceof Error ? err.message : String(err) });
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[${id}] auto-start failed (attempt ${attempt}/${maxAttempts}):`, msg);
+      running.set(id, { channel: null, error: msg });
+      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
     }
   }
+  console.error(`[${id}] auto-start gave up after ${maxAttempts} attempts`);
 }
 
 // ── 会话管理（面板可查询和控制）─────────────────────────────────────────────

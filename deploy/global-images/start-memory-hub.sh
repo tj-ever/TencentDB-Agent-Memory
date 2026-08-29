@@ -87,6 +87,7 @@ rm_container_if_exists "$CONTAINER"
 # MEMORY_LLM_* 仍作为知识服务启动校验及未绑定场景的默认参数传入。
 info "启动 memory-hub (image=$MEMORY_HUB_IMAGE, panel=$PANEL_PORT knowledge=$KNOWLEDGE_PORT)"
 $DOCKER run -d --name "$CONTAINER" \
+  --restart unless-stopped \
   --network "$NETWORK" \
   --network-alias memory-hub \
   --add-host=host.docker.internal:host-gateway \

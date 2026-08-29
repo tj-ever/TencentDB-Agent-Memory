@@ -1,4 +1,4 @@
-# 飞书机器人与自定义上游运行说明
+# AI交付协同平台 二开说明
 
 本文描述当前工作区中 MemoryBridge、MemoryPanel 和 MemoryProxy 的飞书机器人及自定义上游能力。
 
@@ -53,7 +53,7 @@ MemoryPanel:8125 -> MemoryCore（面板自身业务）
 | `feishu.app_id` / `app_secret` | 飞书应用凭据 |
 | `feishu.policy` | `requireMention`、`dmMode`、可选私聊白名单 |
 | `session_mode` | `none`、`user` 或 `chat` |
-| `system_prompt` | 机器人专用 system prompt；为空时使用通用规则 |
+| `system_prompt` | 机器人专用 system prompt；为空时使用 `config/zhuoyu.system.md` 通用规则 |
 
 Bridge 的运行数据包括：
 
@@ -87,6 +87,8 @@ Bridge 的运行数据包括：
 | `BRIDGE_HOST` | `0.0.0.0` | HTTP 监听地址 |
 | `BRIDGE_DATA_DIR` | `./data` | 配置和队列目录 |
 | `CLAUDE_BIN` | `claude` | Claude CLI 可执行文件 |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 内置值 | Claude 上下文自动压缩窗口 |
+| `CLAUDE_CODE_MAX_RETRIES` | 内置值 | Claude 调用最大重试次数 |
 | `BRIDGE_PROXY_DEFAULT` | `http://127.0.0.1:8096` | 机器人未配置 Proxy 时使用 |
 | `BRIDGE_USER_KEY_DEFAULT` | 空 | 机器人未配置 user key 时使用 |
 
@@ -116,7 +118,7 @@ Bridge 的运行数据包括：
 
 Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.agents` 可按 URL 前缀配置独立的 URL、模型和 Mem binding。
 
-**v4.3+ Key 分离**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不再配置/替换任何 agent 级 Key。历史配置中的 agent.apiKey 会在解析时静默忽略。记忆身份通过独立的 `x-tdai-user-key` 请求头携带。
+**Key 分离语义**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不配置/替换任何 agent 级 Key。记忆身份通过独立的 `x-tdai-user-key` 请求头携带。
 
 当前路由示例：
 
@@ -126,9 +128,11 @@ Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` �
 /fw1/<space>/v1/...
 ```
 
-内置 Agent（如 `claude-code`、`codex`、`workbuddy`）和已配置 Agent 使用第二段作为 `space_id`。自定义 Agent（例如 `fw1`）使用其配置的 URL 和模型。
+内置 Agent：`claude-code`、`codebuddy`、`codex`、`cursor`、`hermes`、`openclaw`、`workbuddy`、`dsh`、`opencode`。内置 Agent 和已配置 Agent 使用第二段作为 `space_id`；自定义 Agent（例如 `fw1`）使用其配置的 URL 和模型。
 
 Agent 配置了 `binding.team_id` 和 `binding.agent_id` 时，Proxy 会先调用 MemoryCore 校验调用者是否为该 Team 的 active member（使用 `x-tdai-user-key` 作为记忆身份）；校验通过后将 binding 作为可信会话上下文。
+
+前置认证（路由解析 → 记忆身份解析 → `verifyUserKey` → binding 授权）收敛在 `MemoryProxy/src/custom/upstream.ts` 的 `earlyAuth()` 门面中，`handler.ts` 与 `anthropicHandler.ts` 调用同一入口。
 
 ### 运行期上游配置
 
@@ -149,6 +153,7 @@ Agent 配置了 `binding.team_id` 和 `binding.agent_id` 时，Proxy 会先调�
 - 机器人和 Knowledge 默认共用 Proxy 面板中的上游配置。
 - `MEMORY_LLM_BASE_URL`、`MEMORY_LLM_API_KEY`、`MEMORY_LLM_MODEL` 仍作为 memory-hub 启动校验和知识服务默认参数。
 - `PROXY_UPSTREAM_URL`、`PROXY_UPSTREAM_API_KEY`、`PROXY_UPSTREAM_MODEL` 生成 Proxy 主配置。
+- `LLM_CHECK_WARN_ONLY=1`：跳过 `_lib.sh` 的交互式 LLM 配置与硬性通路预检，仅警告不阻断（适用于 `host.docker.internal` 等宿主机测不通但容器内可通的部署形态）。
 
 Bridge 容器使用以下持久化卷：
 
@@ -157,6 +162,12 @@ Bridge 容器使用以下持久化卷：
 | `tdai-memory-bridge-data` | `bots.json`、待处理队列、会话用户映射 |
 | `tdai-memory-bridge-workspaces` | 机器人工作目录和交付文件 |
 | `tdai-memory-bridge-sessions` | `/home/node/.claude` Claude 会话目录 |
+
+镜像构建约定（四个 Dockerfile + `deploy/panel-knowledge-combined/build.sh` 统一）：
+
+- npm cache mount 统一使用 `id=shared-npm-cache`，跨镜像复用下载缓存。
+- 构建参数 `--build-arg NPM_REGISTRY=<url>` 指定 npm 源；Dockerfile 默认官方源，`build.sh` 默认 `https://registry.npmmirror.com`，均可显式覆盖。
+- 有 lock 文件的构建使用 `npm ci` 直装。
 
 常用命令：
 
@@ -168,6 +179,14 @@ cp .env.example .env
 ./start-memory-bridge.sh
 ```
 
+## CI
+
+`.github/workflows/pr-ci.yml` 在官方 CI 之外新增 `custom-code` job，PR 到 `main` 时运行：
+
+- MemoryBridge：`typecheck` + `test`（零错误，硬门禁）。
+- MemoryProxy：typecheck 错误数门禁，基线 55（上游 v2.0.1 发版即存在），超过基线即失败。
+- MemoryPanel web：`typecheck`（零错误，硬门禁）。
+
 ## 二开代码布局：隔离目录与散改清单
 
 二开遵循「新功能进 `custom/` 隔离目录，最小化散改官方文件」的原则。
@@ -177,7 +196,7 @@ cp .env.example .env
 | 目录 | 内容 |
 | --- | --- |
 | `MemoryBridge/` | 整个子项目（含 `config/zhuoyu.system.md` 业务提示词） |
-| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
+| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`、`trustedPreset()`）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
 | `MemoryPanel/src/panel/custom/` | 面板反代 Bridge 的 channels 路由、Proxy 上游配置路由、统一注册点 index.ts |
 | `MemoryPanel/web/src/custom/` | 前端机器人管理 API、会话管理组件、系统配置页 |
 | `MemoryPanel/web/src/pages/team/ChannelsPage/` | 机器人管理页面 |
@@ -186,29 +205,33 @@ cp .env.example .env
 
 | 文件 | 改动内容 |
 | --- | --- |
-| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 接入 custom/upstream 路由解析与记忆身份解析，替换原 verifyUserKey 早退逻辑 |
+| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 调用 `custom/upstream.ts` 的 `earlyAuth()` 统一前置认证；anthropicHandler 仅保留 `trustedPreset` |
 | `MemoryProxy/src/server.ts` | 注册 `/v3/config/upstream` GET/PUT |
 | `MemoryProxy/src/session/index.ts` | Anthropic 协议一律走 claude-code 状态机 + serverPreset 直注册 |
-| `MemoryProxy/src/types.ts` | v4.3+ Key 分离语义（agent 级 apiKey 移除） |
-| `MemoryProxy/src/auth.ts`、`systemUserPassthrough.ts`、`config.ts`、`codexHandler.ts`、`workbuddyHandler.ts`、`auxiliaryHandler.ts`、`credit-reporter.ts`、`session/claude-code/init.ts` | 配合 Key 分离与记忆身份的小幅适配 |
-| `MemoryProxy/config.example.yaml` | 上游配置示例更新（agents 映射无 apiKey） |
+| `MemoryProxy/src/types.ts` | Key 分离语义（agent 级 apiKey 已移除） |
+| `MemoryProxy/src/auth.ts`、`systemUserPassthrough.ts`、`config.ts`、`codexHandler.ts`、`workbuddyHandler.ts`、`auxiliaryHandler.ts`、`credit-reporter.ts`、`session/claude-code/init.ts` | 配合 Key 分离、记忆身份与内置 Agent 名单（`isBuiltinAgent()`）的小幅适配 |
+| `MemoryProxy/config.example.yaml` | 上游配置示例（agents 映射无 apiKey） |
 | `MemoryPanel/src/panel/http/app.ts` | 注册 `registerCustomRoutes`（一行） |
-| `MemoryPanel/src/panel/config/panel-config.ts` | 新增 `bridge.baseUrl` 与 `proxy.baseUrl/publicUrl` 配置段 |
+| `MemoryPanel/src/panel/config/panel-config.ts` | `bridge.baseUrl` 与 `proxy.baseUrl/publicUrl` 配置段 |
 | `MemoryPanel/web/`（LoginGate、i18n、ConsoleLayout、GlobalHeader、routes、menu 等） | 品牌名「AI交付智协平台」+ 菜单/路由接入机器人管理与系统配置页 |
-| `deploy/global-images/*.sh`、`.env.example` | bridge 容器编排 + 环境变量适配 |
+| `MemoryBridge/`、`MemoryCore/`、`MemoryProxy/`、`deploy/panel-knowledge-combined/` 的 Dockerfile | npm cache mount 统一 `shared-npm-cache`、`NPM_REGISTRY` build-arg、`npm ci` |
+| `.github/workflows/pr-ci.yml` | `custom-code` job（见 CI 节） |
+| `deploy/global-images/*.sh`、`_lib.sh`、`.env.example` | bridge 容器编排 + `LLM_CHECK_WARN_ONLY` 预检跳过 |
 
 ## 升级上游版本的合并要点
 
 1. 合并前提交或 stash 本地全部改动；在集成分支上执行 `git merge <upstream-tag>`，不直接在 `custom/main` 上试错。
 2. 冲突解决原则：**保官方功能逻辑，重新套用二开**。隔离目录不会冲突；散改文件需先看官方改了什么，再把对应二开意图（见上表）重新落到新代码上。
 3. 重点核对散改热区是否被官方重构吞掉：
-   - `handler.ts` / `anthropicHandler.ts`：custom/upstream 的调用链是否还需要挂在新逻辑上；
+   - `handler.ts` / `anthropicHandler.ts`：`earlyAuth()` 调用是否还需要挂在新逻辑上；
    - `session/index.ts`：Anthropic→claude-code 状态机的强制路由 + serverPreset 参数；
    - `panel-config.ts` 的 `bridge`/`proxy` 段与 `app.ts` 的 `registerCustomRoutes` 注册行；
    - `web/` 菜单（`PageId` 联合类型的自定义项）、路由、i18n 自定义文案；
-   - `deploy/global-images/*.sh` 若官方加了 `_lib.sh` 重构，需把 bridge 启停并入新结构。
+   - `deploy/global-images/*.sh` 的 `_lib.sh` 结构中 bridge 启停与 `LLM_CHECK_WARN_ONLY`；
+   - 四个 Dockerfile 的 cache mount id 与 `NPM_REGISTRY` 参数；
+   - `pr-ci.yml` 的 `custom-code` job 与 MemoryProxy 错误数基线。
 4. `MemoryBridge/` 为独立目录，无合并冲突风险；只需确认 Dockerfile/deploy 脚本引用路径未失效。
-5. 合并后必须全量跑「当前检查命令」，并人工回归机器人启停与 `/v3/config/upstream` 面板读写。
+5. 合并后必须全量跑「当前检查命令」（CI `custom-code` job 即其自动化形态），并人工回归机器人启停与 `/v3/config/upstream` 面板读写。
 
 ## 安全约束
 
@@ -225,7 +248,10 @@ cd MemoryBridge
 npm run typecheck
 npm test
 
-cd ..
+cd ../MemoryPanel/web
+npm run typecheck
+
+cd ../..
 bash -n deploy/global-images/start-all.sh \
   deploy/global-images/start-memory-bridge.sh \
   deploy/global-images/start-memory-hub.sh \
@@ -234,5 +260,4 @@ bash -n deploy/global-images/start-all.sh \
 git diff --check
 ```
 
-----
-*文档更新：2026-08-27，基于 commit `7d0c909` + 工作区全部二开改动；上游基线 v2.0.0，升级目标 v2.0.1。*
+MemoryProxy 的 typecheck 有 55 个上游自带错误（v2.0.1 发版即存在），不作为门禁，CI 以错误数不超基线为准。

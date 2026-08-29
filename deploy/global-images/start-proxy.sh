@@ -155,6 +155,7 @@ YAML
 
 info "启动 proxy (image=$PROXY_IMAGE, port=$PROXY_PORT)"
 $DOCKER run -d --name "$CONTAINER" \
+  --restart unless-stopped \
   --network "$NETWORK" \
   --network-alias proxy \
   --add-host=host.docker.internal:host-gateway \
