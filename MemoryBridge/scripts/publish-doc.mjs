@@ -146,6 +146,7 @@ function parseMd(md) {
         rows.push(lines[i].trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
         i += 1;
       }
+      rows.splice(1, 1); // 第二行是 |---|---| 分隔行，不是数据
       flush();
       units.push({ kind: 'table', rows });
       continue;
