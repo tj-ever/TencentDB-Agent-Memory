@@ -7,7 +7,10 @@ function stripContentImages(container: Record<string, unknown>, key: string): nu
     !block || typeof block !== "object" || !IMAGE_TYPES.has(String((block as { type?: unknown }).type)),
   );
   const removed = content.length - filtered.length;
-  if (removed) container[key] = filtered.length ? filtered : "";
+  if (removed) {
+    // 剥完全部图片后 content 为空会被上游 400 拒收（空 content 非法），放一个文本占位块兜底。
+    container[key] = filtered.length ? filtered : [{ type: "text", text: "[image removed]" }];
+  }
   return removed;
 }
 

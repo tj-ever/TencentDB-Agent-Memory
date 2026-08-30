@@ -2,14 +2,21 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { listBots, getBot, createBot, updateBot, deleteBot, publicBot, type Bot, type BotInput } from './store.js';
 import { startBot, stopBot, statusOf, getBotSessionState, abortBotTask, clearBotSession } from './runtime.js';
 
-const CORS_HEADERS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-headers': 'content-type, x-tdai-service-id, x-tdai-user-key',
-  'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
-};
+// 管理 API 门禁：设置 BRIDGE_ADMIN_TOKEN 后，除 /health 外全部要求 x-bridge-token 匹配。
+// 不设时放行并告警（本地裸跑开发场景）；部署脚本会生成 .bridge-token 并注入两容器。
+// 注：浏览器从不直连 bridge（面板走服务端反代），故无 CORS 头。
+const ADMIN_TOKEN = process.env.BRIDGE_ADMIN_TOKEN || '';
+if (!ADMIN_TOKEN) {
+  console.warn('[http] BRIDGE_ADMIN_TOKEN 未设置，管理 API 处于无鉴权状态（仅限本地开发）');
+}
+
+function authorized(req: IncomingMessage): boolean {
+  if (!ADMIN_TOKEN) return true;
+  return req.headers['x-bridge-token'] === ADMIN_TOKEN;
+}
 
 function send(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...CORS_HEADERS });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
 }
 
@@ -37,19 +44,16 @@ function view(bot: Bot) {
 
 export function createBridgeServer() {
   return createServer(async (req, res) => {
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, CORS_HEADERS);
-      return res.end();
-    }
-
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const { pathname } = url;
 
-    try {
-      if (req.method === 'GET' && pathname === '/health') {
-        return send(res, 200, { ok: true, service: 'memory-bridge' });
-      }
+    if (req.method === 'GET' && pathname === '/health') {
+      return send(res, 200, { ok: true, service: 'memory-bridge' });
+    }
 
+    if (!authorized(req)) return send(res, 401, { code: 401, message: 'unauthorized', request_id: '', data: null });
+
+    try {
       if (req.method === 'GET' && pathname === '/api/bots') {
         const teamId = url.searchParams.get('team_id');
         let bots = listBots();

@@ -22,6 +22,10 @@ require_vars \
   MEMORY_LLM_BASE_URL MEMORY_LLM_API_KEY MEMORY_LLM_MODEL \
   KNOWLEDGE_PUBLIC_BASE_URL
 
+# 面板反代 bridge 时携带管理 token（bridge 容器由 start-memory-bridge.sh 校验）。
+# bridge 未启用时 token 无消费方，生成也无害。
+ensure_bridge_token
+
 # 与 memory-core 保持一致的 gateway 内部凭据（默认 local，仅本地体验）
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY:-local}"
 
@@ -111,6 +115,7 @@ $DOCKER run -d --name "$CONTAINER" \
   -e KNOWLEDGE_LLM_BINDING_SYNC=1 \
   -e KNOWLEDGE_LLM_PROXY_BASE_URL="http://tdai-proxy:8096/claude-code/default/v1" \
   -e MEMORY_BRIDGE_URL="${MEMORY_BRIDGE_URL:-http://tdai-memory-bridge:8130}" \
+  -e MEMORY_BRIDGE_TOKEN="${BRIDGE_ADMIN_TOKEN:-}" \
   -e MEMORY_PROXY_URL="${MEMORY_PROXY_URL:-http://tdai-proxy:8096}" \
   "$MEMORY_HUB_IMAGE" >/dev/null
 

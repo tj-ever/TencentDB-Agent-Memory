@@ -62,6 +62,8 @@ $DOCKER run --rm \
   -v "${BRIDGE_SESSIONS_VOLUME}:/v3" \
   alpine chown -R 1000:1000 /v1 /v2 /v3
 
+ensure_bridge_token
+
 info "启动 $CONTAINER (port=$BRIDGE_PORT)"
 $DOCKER run -d --name "$CONTAINER" \
   --network "$NETWORK" \
@@ -73,6 +75,7 @@ $DOCKER run -d --name "$CONTAINER" \
   -v "${BRIDGE_WORKSPACES_VOLUME}:/app/workspaces" \
   -v "${BRIDGE_SESSIONS_VOLUME}:/home/node/.claude" \
   -e BRIDGE_USER_KEY_DEFAULT="$BRIDGE_USER_KEY_DEFAULT" \
+  -e BRIDGE_ADMIN_TOKEN="$BRIDGE_ADMIN_TOKEN" \
   "$BRIDGE_IMAGE" >/dev/null
 
 wait_healthy "$CONTAINER" 90

@@ -31,7 +31,7 @@ export interface PanelConfig {
     proxyBaseUrl: string;
   };
   /** custom: Feishu MemoryBridge HTTP API */
-  bridge: { baseUrl: string };
+  bridge: { baseUrl: string; token: string };
   /** MemoryProxy (tdai-proxy :8096)：Proxy 上游配置卡片经它读写运行时上游。 */
   proxy: { baseUrl: string; publicUrl: string };
   /** 默认 Agent 模板文件的本地存储目录根（存 Panel 本地，按 {dir}/{instanceId}/{team_id}/template.json）。 */
@@ -70,6 +70,7 @@ export function loadPanelConfig(): PanelConfig {
     },
     bridge: {
       baseUrl: env('MEMORY_BRIDGE_URL', 'http://127.0.0.1:8130'),
+      token: env('MEMORY_BRIDGE_TOKEN', ''),
     },
     proxy: {
       baseUrl: env('MEMORY_PROXY_URL', 'http://127.0.0.1:8096'),

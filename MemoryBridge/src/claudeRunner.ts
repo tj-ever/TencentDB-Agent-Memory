@@ -170,6 +170,13 @@ export function createClaudeRunner({
         if (onDelta) push = push.then(() => onDelta(text)).catch(() => {});
       }
 
+      // 合成提示（工具调用/限流重试）只推给打字机卡片，不进 visible——
+      // visible 是最终回复文本，混入会把「调用 X…」当正文发给用户（非流式 fallback 必现）。
+      function notify(text: string) {
+        if (!text || !onDelta) return;
+        push = push.then(() => onDelta(text)).catch(() => {});
+      }
+
       function handleEvent(evt: unknown) {
         const delta = extractStreamDelta(evt);
         if (!delta) return;
@@ -179,20 +186,20 @@ export function createClaudeRunner({
           return;
         }
         if (delta.kind === 'tool') {
-          emit(`\n\n_调用 ${delta.name}…_\n\n`);
+          notify(`\n\n_调用 ${delta.name}…_\n\n`);
           return;
         }
         if (delta.kind === 'retry') {
           const s = delta.status === 429 ? '上游限流(429)' : `上游错误(${delta.status || '网络'})`;
           const wait = delta.delayMs ? `，${Math.round(delta.delayMs / 1000)}s 后` : '，';
           const n = delta.maxRetries ? `第 ${delta.attempt}/${delta.maxRetries} 次` : `第 ${delta.attempt} 次`;
-          emit(`\n\n_${s}${wait}重试（${n}）…_\n\n`);
+          notify(`\n\n_${s}${wait}重试（${n}）…_\n\n`);
           return;
         }
         if (delta.kind === 'assistant' && !gotPartial) {
           for (const block of delta.content) {
             if (block.type === 'text' && typeof block.text === 'string') emit(block.text);
-            if (block.type === 'tool_use') emit(`\n\n_调用 ${String(block.name ?? '工具')}…_\n\n`);
+            if (block.type === 'tool_use') notify(`\n\n_调用 ${String(block.name ?? '工具')}…_\n\n`);
           }
           return;
         }

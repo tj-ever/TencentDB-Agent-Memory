@@ -91,6 +91,7 @@ Bridge 的运行数据包括：
 | `CLAUDE_CODE_MAX_RETRIES` | 内置值 | Claude 调用最大重试次数 |
 | `BRIDGE_PROXY_DEFAULT` | `http://127.0.0.1:8096` | 机器人未配置 Proxy 时使用 |
 | `BRIDGE_USER_KEY_DEFAULT` | 空 | 机器人未配置 user key 时使用 |
+| `BRIDGE_ADMIN_TOKEN` | 空（无鉴权+告警） | 管理 API 门禁：设置后除 `/health` 外全部要求 `x-bridge-token` 匹配。`start-memory-bridge.sh` 自动生成 `.bridge-token` 并注入 bridge 容器；面板经 `MEMORY_BRIDGE_TOKEN` 携带同一 token |
 
 ## MemoryPanel
 

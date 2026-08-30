@@ -16,7 +16,10 @@ async function bridge(deps: PanelDeps, method: string, path: string, body?: unkn
   const base = deps.config.bridge.baseUrl.replace(/\/$/, '');
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(deps.config.bridge.token ? { 'x-bridge-token': deps.config.bridge.token } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

@@ -1,5 +1,11 @@
 import { it, expect } from 'vitest';
-import { parseSessionMode, resolveSessionId, sessionArgv, sessionUuid } from './sessionMode.js';
+import { parseSessionMode, projectSlug, resolveSessionId, sessionArgv, sessionUuid } from './sessionMode.js';
+
+it('projectSlug 与 Claude Code 目录命名一致（非字母数字全替换）', () => {
+  // 实测 ~/.claude/projects/：'.'、'/' 等均替换为 '-'（如 /Users/x/.claude/sites → -Users-x--claude-sites）
+  expect(projectSlug('/app/workspaces/zhuoyu')).toBe('-app-workspaces-zhuoyu');
+  expect(projectSlug('/home/node/.claude/x_y z')).toBe('-home-node--claude-x-y-z');
+});
 
 it('parseSessionMode aliases', () => {
   expect(parseSessionMode('2')).toBe('user');

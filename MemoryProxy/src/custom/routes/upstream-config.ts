@@ -56,7 +56,7 @@ function persist(config: ProxyConfig, upstream: ProxyConfig["upstream"]): void {
   renameSync(temp, target);
 }
 
-function agentMap(changes: AgentChange[], current: Record<string, AgentUpstreamEntry>): Record<string, AgentUpstreamEntry> {
+export function agentMap(changes: AgentChange[], current: Record<string, AgentUpstreamEntry>): Record<string, AgentUpstreamEntry> {
   const result: Record<string, AgentUpstreamEntry> = {};
   for (const change of changes) {
     const name = change.name?.trim();
@@ -69,10 +69,12 @@ function agentMap(changes: AgentChange[], current: Record<string, AgentUpstreamE
     const taskId = change.binding?.task_id?.trim();
     const memKey = change.memory?.key?.trim();
     const memSpace = change.memory?.spaceId?.trim();
+    // agent 改名时按旧名查存量条目（掩码 key / spaceId 的保留源），否则改名即静默丢 key → 重复开号。
+    const prev = current[change.originalName?.trim() || name];
     // 入站 memory.key 为掩码（"…"）视为未修改：保留磁盘现有明文，避免把掩码写坏配置。
-    const retainedKey = memKey?.includes("…") ? current[name]?.memory?.key : undefined;
+    const retainedKey = memKey?.includes("…") ? prev?.memory?.key : undefined;
     const effectiveKey = retainedKey || (memKey && !memKey.includes("…") ? memKey : undefined);
-    const effectiveSpace = memSpace || current[name]?.memory?.spaceId;
+    const effectiveSpace = memSpace || prev?.memory?.spaceId;
     result[name] = {
       url,
       ...(change.model?.trim() ? { model: change.model.trim() } : {}),
@@ -93,6 +95,10 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
     },
     put: async (c: Context): Promise<Response> => {
       if (!(await authorized(c, config, true))) return c.json({ error: "admin required" }, 403);
+      // 未配置 override 文件时拒绝持久化：persist 的 yamlDump 会重写主 config.yaml，抹掉全部注释。
+      if (!config.overridePath) {
+        return c.json({ error: "PROXY_OVERRIDE_CONFIG not set; refusing to rewrite main config (comments would be lost)" }, 400);
+      }
       const body = await c.req.json<{
         url?: unknown;
         apiKey?: unknown;

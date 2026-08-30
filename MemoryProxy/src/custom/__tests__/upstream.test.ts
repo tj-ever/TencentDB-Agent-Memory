@@ -70,3 +70,25 @@ describe("isAgentBindingAuthorized", () => {
     await expect(isAgentBindingAuthorized(r, "", "", cfg)).resolves.toBe(true);
   });
 });
+
+describe("agentMap（改名保留语义）", () => {
+  it("agent 改名：掩码 key / spaceId 按旧名保留，不静默丢失", async () => {
+    const { agentMap } = await import("../routes/upstream-config.js");
+    const current = { old: { url: "https://dev.example.com/v1", memory: { key: "sk-mem-real", spaceId: "spc-1" } } };
+    const out = agentMap(
+      [{ name: "new", originalName: "old", url: "https://dev.example.com/v1", memory: { key: "sk-mem…" } }],
+      current,
+    );
+    expect(out.new?.memory).toEqual({ key: "sk-mem-real", spaceId: "spc-1" });
+  });
+
+  it("未改名：掩码 key 同样保留", async () => {
+    const { agentMap } = await import("../routes/upstream-config.js");
+    const current = { same: { url: "https://dev.example.com/v1", memory: { key: "sk-mem-real" } } };
+    const out = agentMap(
+      [{ name: "same", url: "https://dev.example.com/v1", memory: { key: "sk-mem…" } }],
+      current,
+    );
+    expect(out.same?.memory?.key).toBe("sk-mem-real");
+  });
+});

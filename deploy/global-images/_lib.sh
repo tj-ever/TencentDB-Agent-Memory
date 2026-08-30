@@ -48,6 +48,27 @@ require_vars() {
   fi
 }
 
+# Bridge 管理 API 的共享 token：bridge 容器校验、面板容器携带。
+# 幂等：.bridge-token 已存在则复用，否则生成 32 位随机串并落盘（模式同 .admin-key）。
+ensure_bridge_token() {
+  local file="${BRIDGE_TOKEN_FILE:-$SCRIPT_DIR/.bridge-token}"
+  if [[ -s "$file" ]]; then
+    BRIDGE_ADMIN_TOKEN="$(<"$file")"
+    return
+  fi
+  local raw
+  if command -v openssl >/dev/null 2>&1; then
+    raw=$(openssl rand -base64 48 | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 32)
+  else
+    raw=$(head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 32)
+  fi
+  [[ -n "$raw" ]] || die "生成 bridge token 失败（openssl/urandom 均不可用）"
+  echo -n "$raw" > "$file"
+  chmod 600 "$file"
+  BRIDGE_ADMIN_TOKEN="$raw"
+  ok "已生成 bridge 管理 token → $file"
+}
+
 # 找到可用 docker 命令（兼容 Homebrew 独立安装 + colima）
 # 优先级：PATH 中的 docker → Homebrew apple silicon → Homebrew intel → /usr/local
 # Homebrew Cellar 路径下按版本 glob，取最新（sort -V），避免硬编码具体小版本号。

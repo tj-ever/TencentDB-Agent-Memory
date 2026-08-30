@@ -40,8 +40,10 @@ export function sessionUuid(seed: string): string {
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
 }
 
+// Claude Code 把 cwd 里所有非字母数字字符替换为 '-'（实测 ~/.claude/projects/ 下的
+// 目录名：'.'、'_'、空格同样被替换），必须与之逐字符一致才能命中会话文件。
 export function projectSlug(workDir: string): string {
-  return String(workDir).replace(/\//g, '-');
+  return String(workDir).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 export function sessionFilePath(workDir: string, sessionId: string): string {
