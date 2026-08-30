@@ -60,7 +60,12 @@ export async function runWithRotatingMarkdown<T>(
         await new Promise<void>((r) => { release = r; });
       },
     }, opts);
-    await readyP;
+    // 回复目标已被撤回时 stream() 会在调用 producer 前直接 reject（code 230011），
+    // ready 永不触发——必须和 streamDone 竞速，否则这里永久挂死（只能靠 1h 泵超时兜底）。
+    // race 一旦失败即抛撤回错误：初次 openCard 发生在 work() 之前，
+    // 让整条消息在 claude 生成开始前就失败退出，不浪费上游 token。
+    await Promise.race([readyP, streamDone]);
+    if (!ctl) throw new Error('stream open failed');
     cards += 1;
     armTimer();
   }
@@ -99,10 +104,12 @@ export async function runWithRotatingMarkdown<T>(
   try {
     return await work(wrapper);
   } catch (err) {
+    // 中止（撤回/面板 abort）不是失败：卡片停在已生成内容上正常收尾，不写错误尾注。
+    const aborted = err instanceof Error && err.message === 'aborted';
     await enqueue(async () => {
       try {
         if (!ctl) await openCard();
-        await ctl?.append('\n\n_处理失败，请稍后再试。_');
+        await ctl?.append(aborted ? '' : '\n\n_处理失败，请稍后再试。_');
       } catch { /* ignore */ }
     });
     throw err;

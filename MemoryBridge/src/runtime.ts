@@ -68,6 +68,8 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
 
   let pumping = false;
   let currentAbort: AbortController | null = null;
+  let currentMsgId: string | null = null;   // 正在处理的消息 id（撤回时用来区分「生成中」和「排队中」）
+  let recalledMsgId: string | null = null;  // 生成中被撤回的消息 id：abort 后 processOne 据此静默跳过
 
   // 处理队列里的单条消息（含图片拒绝 + 流式回复 + 错误重试）。
   async function processOne(p: PendingMsg) {
@@ -84,6 +86,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     let streamed = false;
     const ac = new AbortController();
     currentAbort = ac;
+    currentMsgId = p.id;
     try {
       const reply = await runWithRotatingMarkdown(channel, p.chatId, { replyTo: p.id }, async (ctl) => {
         streamed = true;
@@ -112,9 +115,14 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
       await shareDocs(reply && rewriteFeishuHost(reply), p);
     } catch (err) {
       // 用户已撤回该消息：不再继续回复，幂等跳过该条，避免二次生成/重复发送。
+      // 两条路径：a) 生成中收到撤回事件 → abort 触发 Error('aborted')；b) 发送/回复时飞书返回撤回错误码。
       const msg = err instanceof Error ? err.message : String(err);
       const larkErr = err as { code?: string; response?: { data?: { code?: number | string } } };
-      if (/withdrawn/i.test(msg) || /\b230011\b/.test(msg) || larkErr.code === 'target_revoked' || larkErr.response?.data?.code === 230011) {
+      if (
+        recalledMsgId === p.id
+        || /withdrawn/i.test(msg) || /\b230011\b/.test(msg)
+        || larkErr.code === 'target_revoked' || larkErr.response?.data?.code === 230011
+      ) {
         console.log(`[${bot.id}] 消息已撤回，跳过处理 msg=${p.id}`);
         return;
       }
@@ -129,15 +137,18 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
       }
     } finally {
       if (currentAbort === ac) currentAbort = null;
+      if (currentMsgId === p.id) {
+        currentMsgId = null;
+        if (recalledMsgId === p.id) recalledMsgId = null;
+      }
     }
   }
 
   // 串行消费该 bot 的持久化队列：一次一条，处理完删条；bridge 重启后从文件重放。
-  // 单条消息卡死（如回复目标已被撤回导致流式 pending 永不 settle）会让 pump 永久挂起、
-  // pumping 锁死为 true，后续所有消息只排队不被消费。加超时兜底：超时即 abort+跳过，
-  // 保证泵一定前进，不会因一条死消息堵死整队。
-  // 1 小时兜底：仅拦截「真·永久挂死」（回复目标被撤回等导致 promise 永不 settle），
-  // 正常长任务（模型生成长文/查资料）不该被误杀。
+  // 单条消息卡死会让 pump 永久挂起、pumping 锁死为 true，后续所有消息只排队不被消费。
+  // 加超时兜底：超时即 abort+跳过，保证泵一定前进，不会因一条死消息堵死整队。
+  // 1 小时兜底：仅拦截「真·永久挂死」，正常长任务（模型生成长文/查资料）不该被误杀。
+  // （撤回导致的 openCard 挂死已在 streamRotate 里根治，这里纯保险。）
   const PER_MSG_TIMEOUT_MS = 60 * 60 * 1000;
   function pumpWithTimeout(msg: PendingMsg): Promise<void> {
     return new Promise((resolve) => {
@@ -207,6 +218,32 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
   });
   channel.on('reconnecting', () => console.log(`[${bot.id}] 重连中…`));
   channel.on('reconnected', () => console.log(`[${bot.id}] 已重连`));
+
+  // 主动撤回处理：SDK LarkChannel 的 EventMap 没有 recalled 事件，但底层
+  // EventDispatcher.register 就是往 Map 塞 key，直接补注册原始事件
+  // im.message.recalled_v1（channel 自己不占用该 key，register 时序无关紧要）。
+  const dispatcher = (channel as unknown as {
+    dispatcher?: { register: (handlers: Record<string, (raw: unknown) => void>) => unknown };
+  }).dispatcher;
+  dispatcher?.register({
+    'im.message.recalled_v1': (raw) => {
+      const messageId = (raw as { message_id?: string }).message_id;
+      if (!messageId) return;
+      if (currentMsgId === messageId) {
+        // 正在生成 → 杀掉 claude 子进程停止打字机；processOne 凭 recalledMsgId 静默跳过。
+        recalledMsgId = messageId;
+        currentAbort?.abort();
+        console.log(`[${bot.id}] 消息撤回(生成中)，中止生成 msg=${messageId}`);
+        return;
+      }
+      // 还在队列里排队（注意排除正被处理的队头，它由 abort 路径负责）→ 直接移出。
+      if (loadQueue(bot.id).some((x) => x.id === messageId)) {
+        dequeue(bot.id, messageId);
+        console.log(`[${bot.id}] 消息撤回(排队中)，移出队列 msg=${messageId}`);
+      }
+      // 已回复完 → 机器人的卡片是独立消息，保留不动。
+    },
+  });
   return {
     pump,
     abort: () => {
