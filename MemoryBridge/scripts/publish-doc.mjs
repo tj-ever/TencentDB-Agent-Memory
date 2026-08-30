@@ -100,7 +100,7 @@ function parseMd(md) {
       continue;
     }
     if (/^(---+|\*\*\*+)\s*$/.test(line)) {
-      batch.push({ block_type: 22, horizontal: {} });
+      batch.push({ block_type: 22, divider: {} });  // 实测 key 是 divider，不是 horizontal
       i += 1;
       continue;
     }
