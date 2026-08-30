@@ -1,9 +1,10 @@
 // embed-prototype.mjs - HTML 截图后插入飞书文档图片块，并在图片后附加可交互 HTML 文件块。
-// 用法：node embed-prototype.mjs <document_id> <html_path> [caption]
+// 用法：node embed-prototype.mjs <document_id> <html_path> [caption] [--update]
 // 截图用 puppeteer 自带 Chromium（npm install 时下载），不依赖宿主机浏览器。
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import puppeteer from 'puppeteer';
+import { loadDeliverables, registerDeliverable } from './lib/deliverable-registry.mjs';
 
 const API = 'https://open.feishu.cn/open-apis';
 
@@ -157,6 +158,30 @@ async function insertFile(tok, docId, filePath) {
   return fileBlock.block_id;
 }
 
+// 原地刷新：按注册表登记的块 id 重传截图与 HTML，不新建任何块。
+// 这样新版原型不会在文档末尾无限追加新的图片+附件对（历史对话里 V2/V3 各贴一遍）。
+async function updateExisting(tok, docId, htmlPath, pngPath, entry) {
+  const jsonHeaders = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
+  // 1) 刷新截图块
+  const imgToken = await uploadMedia(tok, 'docx_image', entry.image_block_id, pngPath);
+  let r = await fetch(`${API}/docx/v1/documents/${docId}/blocks/${entry.image_block_id}`, {
+    method: 'PATCH',
+    headers: jsonHeaders,
+    body: JSON.stringify({ replace_image: { token: imgToken } }),
+  }).then((r) => r.json());
+  if (r.code !== 0) throw new Error(`replace_image: ${JSON.stringify(r)}`);
+  await verifyBlock(tok, docId, entry.image_block_id, 'image');
+  // 2) 刷新 HTML 附件块
+  const fileToken = await uploadMedia(tok, 'docx_file', entry.html_block_id, htmlPath);
+  r = await fetch(`${API}/docx/v1/documents/${docId}/blocks/batch_update`, {
+    method: 'PATCH',
+    headers: jsonHeaders,
+    body: JSON.stringify({ requests: [{ block_id: entry.html_block_id, replace_file: { token: fileToken } }] }),
+  }).then((r) => r.json());
+  if (r.code !== 0) throw new Error(`replace_file: ${JSON.stringify(r)}`);
+  await verifyBlock(tok, docId, entry.html_block_id, 'file');
+}
+
 const [docId, htmlArg, caption] = process.argv.slice(2);
 if (!docId || !htmlArg) {
   console.error('usage: embed-prototype.mjs <document_id> <html_path> [caption]');
@@ -171,6 +196,29 @@ const htmlPath = resolve(htmlArg);
 const pngPath = htmlPath.replace(/\.html?$/i, '.png');
 await screenshot(htmlPath, pngPath);
 const tok = await tenantToken();
+
+// --update：在注册表里找本文档该 HTML 的最近一次 embed 登记，原地替换。
+if (process.argv.includes('--update')) {
+  const name = basename(htmlPath);
+  const entries = loadDeliverables().filter((e) => e.kind === 'embed' && e.doc_id === docId && e.image_block_id && e.html_block_id);
+  const entry = entries.filter((e) => e.html === name).at(-1) || entries.at(-1);
+  if (!entry) {
+    console.error(`--update 找不到 ${docId} 的历史 embed 登记（注册表 ${process.env.FEISHU_DELIVERABLES || '未配置'}），请先正常发布一次`);
+    process.exit(1);
+  }
+  await updateExisting(tok, docId, htmlPath, pngPath, entry);
+  registerDeliverable({ kind: 'embed-update', doc_id: docId, html: name, image_block_id: entry.image_block_id, html_block_id: entry.html_block_id });
+  console.log(JSON.stringify({ ok: true, updated: true, image_block_id: entry.image_block_id, html_block_id: entry.html_block_id, html_name: name }));
+  process.exit(0);
+}
+
 const blockId = await insertImage(tok, docId, pngPath, caption);
 const htmlBlockId = await insertFile(tok, docId, htmlPath);
+registerDeliverable({
+  kind: 'embed',
+  doc_id: docId,
+  html: basename(htmlPath),
+  image_block_id: blockId,
+  html_block_id: htmlBlockId,
+});
 console.log(JSON.stringify({ ok: true, png: pngPath, block_id: blockId, html_block_id: htmlBlockId, html_name: basename(htmlPath) }));

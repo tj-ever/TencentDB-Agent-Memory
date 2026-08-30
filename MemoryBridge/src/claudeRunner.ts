@@ -3,6 +3,7 @@
 // 记忆绑定：ANTHROPIC_CUSTOM_HEADERS 携带 x-* header，proxy 据此注册 session + 注入记忆/知识库工具。
 // 流式：--output-format stream-json + --include-partial-messages，增量通过 onDelta 推给飞书打字机卡片。
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FeishuCreds } from './docShare.js';
@@ -36,6 +37,14 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 - 整篇文档正文发布：node "$FEISHU_PUBLISH_DOC" <markdown文件> [--title 标题]。分批 + 断点续传，中途失败重跑同命令即从断点继续。禁止手写建文档/建块的内联脚本。
 - 原型截图 + HTML 附件：node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> [小标题]。
 - 文档链接原样输出 https://my.feishu.cn/docx/<文档id>，权限会自动放开。
+
+【迭代即原地更新，禁止增殖版本】
+- 用户消息里带文档链接 + 修改建议时：这是要你改原文档，不是新建。先在 workspace/deliverables.json（$FEISHU_DELIVERABLES）里按链接里的文档 id 查登记，然后用 node "$FEISHU_PUBLISH_DOC" <只含该段新内容的md> --doc-id <文档id> --update-section "锚点标题" 原地替换对应章节；原型迭代用 node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> --update 原地刷新截图与附件。
+- 找不到登记或锚点标题时，先向用户确认「没找到原文档记录，是要新出一版还是重发链接」，不要默默新建第 V2/V3 版文档。
+- 禁止用「V2」「按N条建议修改」之类新标题另建文档替代原地更新。
+
+【大生成先确认】
+- 全新方案/PRD 这类大交付（预计发布整篇文档或原型）前，先用一小段话向用户复述你理解的模块/页面/字段清单，收到「可以/确认/开始」等肯定回复后再动手。用户消息已经足够明确（列清了模块/页面/字段）时可直接开始，不必追问。
 
 【回答】
 - 直接、简洁地回答用户问题，不要输出工具调用语法或 XML 标签。`;
@@ -161,10 +170,22 @@ export interface ClaudeRunner {
   ): Promise<string>;
 }
 
+// 项目术语表（workspace/terminology.md）：历史纠错沉淀的命名/口径约定，存在即注入
+// system prompt，让「办公地点≠工作地点」这类反复纠正过的错一次改对。
+function terminologySection(workDir: string): string {
+  try {
+    const p = join(workDir, 'terminology.md');
+    if (!existsSync(p)) return '';
+    const text = readFileSync(p, 'utf8').trim();
+    if (!text) return '';
+    return `\n\n【项目术语与口径（必须遵守）】\n${text}`;
+  } catch { return ''; }
+}
+
 export function createClaudeRunner({
   baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none',
 }: ClaudeRunnerOptions): ClaudeRunner {
-  const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name)].join('\n\n');
+  const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name), terminologySection(workDir)].filter(Boolean).join('\n\n');
   const MAX_RETRIES = 2;
 
   // abort 原因透传：撤回中止（abort(new Error('recalled'))）与普通中止区分，
@@ -198,6 +219,8 @@ export function createClaudeRunner({
         FEISHU_CHAT_ID: chatId || '',
         FEISHU_EMBED_PROTOTYPE: EMBED_SCRIPT,
         FEISHU_PUBLISH_DOC: PUBLISH_SCRIPT,
+        // 交付物注册表：脚本成功后自动登记 doc_id/块 id，迭代请求据此路由回原文档
+        FEISHU_DELIVERABLES: join(workDir, 'deliverables.json'),
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '500000',
         // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
         // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。

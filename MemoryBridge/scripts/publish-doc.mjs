@@ -9,6 +9,7 @@
 //     （update_text 必须带 style+fields，否则 99992402）
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { registerDeliverable } from './lib/deliverable-registry.mjs';
 
 const API = 'https://open.feishu.cn/open-apis';
 const BATCH = 40; // 单批 children 上限（skill 实测 ~40 稳妥）
@@ -164,14 +165,14 @@ function parseMd(md) {
 }
 
 // ---------- 发布 ----------
-async function publishBatch(tok, docId, blocks) {
-  await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, { children: blocks });
+async function publishBatch(tok, docId, blocks, index) {
+  await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children${index !== undefined ? `?index=${index}` : ''}`, { children: blocks });
 }
 
-async function publishTable(tok, docId, rows) {
+async function publishTable(tok, docId, rows, index) {
   const colSize = Math.max(...rows.map((r) => r.length));
   const norm = rows.map((r) => [...r, ...Array(colSize - r.length).fill('')]);
-  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, {
+  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children${index !== undefined ? `?index=${index}` : ''}`, {
     children: [{ block_type: 31, table: { property: { row_size: norm.length, column_size: colSize } } }],
   });
   const tableBlock = created.children[0];
@@ -201,25 +202,169 @@ async function publishTable(tok, docId, rows) {
   return tableBlock.block_id;
 }
 
-// 数文档根级块总数（分页）。续传对账用。
-async function countChildren(tok, docId) {
-  let n = 0;
+// 拉全文档根级块（分页）。对账/自检共用。
+async function fetchRootChildren(tok, docId) {
+  const items = [];
   let pageToken = '';
   for (;;) {
     const d = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${docId}/children?page_size=200${pageToken}`);
-    n += d.items.length;
-    if (!d.page_token || !d.has_more) return n;
+    items.push(...d.items);
+    if (!d.page_token || !d.has_more) return items;
     pageToken = `&page_token=${d.page_token}`;
   }
 }
 
+// 发布后全量自检：块数=预期、表格无空格子。不过关不登记注册表、不报成功。
+async function verifyPublished(tok, docId, expectedBlocks) {
+  const errors = [];
+  const items = await fetchRootChildren(tok, docId);
+  const tableCellIds = items.filter((b) => b.block_type === 31).flatMap((b) => b.children || []);
+  if (expectedBlocks !== null && items.length !== expectedBlocks) {
+    errors.push(`块数不符：实际 ${items.length}，预期 ${expectedBlocks}`);
+  }
+  let emptyCells = 0;
+  for (const cid of tableCellIds) {
+    const cell = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${cid}`);
+    const textId = cell.block.children?.[0];
+    if (!textId) { emptyCells += 1; continue; }
+    const tb = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${textId}`);
+    const txt = (tb.block.text?.elements || []).map((e) => e.text_run?.content || '').join('');
+    if (!txt.trim()) emptyCells += 1;
+  }
+  if (emptyCells) errors.push(`表格空格子 ${emptyCells} 个`);
+  return { blocks: items.length, tables: tableCellIds.length > 0 ? items.filter((b) => b.block_type === 31).length : 0, empty_cells: emptyCells, errors };
+}
+
+// 网络级失败（fetch reject：断连/超时/重置）自动重试一次；API 业务错误不重试——
+// 业务错误多半已上送成功或参数有误，盲目重试会重复发布（有对账兜底但别主动踩）。
+async function withNetRetry(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!/fetch failed|network|ECONNRESET|ETIMEDOUT|socket hang up/i.test(String(err?.message ?? err))) throw err;
+    console.error(`[publish] 网络错误，2s 后重试一次：${String(err?.message ?? err).slice(0, 120)}`);
+    await new Promise((r) => setTimeout(r, 2000));
+    return fn();
+  }
+}
+
+// ---------- 结构校验：--schema '["背景","方案",…]' ----------
+// 发布前核对 md 里出现过哪些必备章节（任意层级标题，子串包含匹配），缺章节直接拒绝，
+// 避免半篇方案被发布出去。惯例章节集写进 workspace 技能文档，agent 调用时带上。
+function validateSchema(md) {
+  const schemaArg = opt('schema');
+  if (!schemaArg) return;
+  let required;
+  try { required = JSON.parse(schemaArg); } catch { console.error('--schema 需要 JSON 数组，如 \'["背景","方案"]\''); process.exit(1); }
+  if (!Array.isArray(required) || !required.length) { console.error('--schema 需要非空 JSON 数组'); process.exit(1); }
+  const headings = [...md.matchAll(/^#{1,6}\s+(.+)$/gm)].map((m) => m[1].trim());
+  const missing = required.filter((r) => !headings.some((h) => h.includes(r)));
+  if (missing.length) {
+    console.error(`[publish] 结构校验未通过，缺少必备章节：${missing.join('、')}。现有章节：${headings.join(' / ') || '（无）'}`);
+    process.exit(1);
+  }
+  console.error(`[publish] 结构校验通过：${required.length} 个必备章节齐全`);
+}
+
 // ---------- 主流程（断点续传）----------
 const md = readFileSync(mdPath, 'utf8');
+validateSchema(md);
 const units = parseMd(md);
 const defaultTitle = (/^#\s+(.+)$/m.exec(md) || [, basename(mdPath).replace(/\.md$/i, '')])[1];
 const unitBlocks = (u) => (u.kind === 'table' ? 1 : u.blocks.length);
 
 const tok = await tenantToken();
+
+// ---------- 分段增量更新模式：--doc-id X --update-section "标题" ----------
+// md 只放替换后的该段内容（以锚点标题开头）。流程：定位锚点标题 → 删到下一个
+// 同级/更高级标题前 → 在原位依序插入新单元（带断点）。这是「按建议改=原地更新」的核心。
+const updateSection = opt('update-section');
+if (updateSection) {
+  if (!opt('doc-id')) {
+    console.error('--update-section 必须配合 --doc-id 使用（在原文档上改，不新建）');
+    process.exit(1);
+  }
+  const uDocId = opt('doc-id');
+  let uState = null;
+  if (!fresh && existsSync(statePath)) {
+    try { uState = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* 忽略 */ }
+    if (uState?.mode !== 'update' || uState?.doc_id !== uDocId) uState = null;
+  }
+  const sectionUnits = units;
+  if (!sectionUnits.length) {
+    console.error('md 内容为空，没有可更新的段落');
+    process.exit(1);
+  }
+
+  let start;
+  let expectedTotal;
+  if (uState) {
+    start = uState.start;
+    expectedTotal = uState.expected_total;
+    console.error(`[publish] 断点续传：段落插入从第 ${uState.next}/${sectionUnits.length} 单元继续`);
+  } else {
+    // 1) 定位锚点标题（文本完全匹配；列表接口不带文本时逐块 GET）
+    const children = await fetchRootChildren(tok, uDocId);
+    let anchor = -1;
+    let level = 0;
+    for (let i = 0; i < children.length; i++) {
+      const b = children[i];
+      if (b.block_type < 3 || b.block_type > 8) continue;
+      const els = b.heading?.elements || (await api(tok, 'GET', `/docx/v1/documents/${uDocId}/blocks/${b.block_id}`)).block?.heading?.elements || [];
+      const text = els.map((e) => e.text_run?.content || '').join('').trim();
+      if (text === updateSection.trim()) { anchor = i; level = b.block_type - 2; break; }
+    }
+    if (anchor < 0) {
+      const heads = [];
+      for (const b of children) {
+        if (b.block_type >= 3 && b.block_type <= 8 && heads.length < 30) {
+          const els = b.heading?.elements || [];
+          heads.push(els.map((e) => e.text_run?.content || '').join(''));
+        }
+      }
+      console.error(`[publish] 找不到锚点标题「${updateSection}」。文档现有标题：\n  ${heads.filter(Boolean).join('\n  ') || '（无）'}`);
+      process.exit(1);
+    }
+    // 2) 段落范围 = 锚点到下一个同级/更高级标题前
+    let end = children.length;
+    for (let j = anchor + 1; j < children.length; j++) {
+      const bt = children[j].block_type;
+      if (bt >= 3 && bt <= 8 && bt - 2 <= level) { end = j; break; }
+    }
+    // 3) 删旧段（end 不含）
+    if (end > anchor) {
+      await api(tok, 'DELETE', `/docx/v1/documents/${uDocId}/blocks/${uDocId}/children/batch_delete`, { start_index: anchor, end_index: end });
+    }
+    start = anchor;
+    expectedTotal = children.length - (end - anchor) + sectionUnits.reduce((n, u) => n + unitBlocks(u), 0);
+    console.error(`[publish] 已删除旧段落（根级第 ${anchor}~${end} 块），原位插入 ${sectionUnits.length} 个新单元`);
+    uState = { mode: 'update', doc_id: uDocId, next: 0, start, expected_total: expectedTotal };
+    writeFileSync(statePath, JSON.stringify(uState));
+  }
+
+  // 4) 依序原位插入（带断点；表挂数会回滚自己，重跑重建）
+  let idx = start;
+  for (let n = uState.next; n < sectionUnits.length; n++) {
+    const u = sectionUnits[n];
+    await withNetRetry(() => (u.kind === 'batch'
+      ? publishBatch(tok, uDocId, u.blocks, idx)
+      : publishTable(tok, uDocId, u.rows, idx)));
+    idx += unitBlocks(u);
+    writeFileSync(statePath, JSON.stringify({ ...uState, next: n + 1 }));
+    console.error(`[publish] 段落单元 ${n + 1}/${sectionUnits.length} 已插入`);
+  }
+
+  const check = await verifyPublished(tok, uDocId, expectedTotal);
+  if (check.errors.length) {
+    console.error(`[publish] 自检未通过：${check.errors.join('；')}`);
+    console.log(JSON.stringify({ ok: false, doc_id: uDocId, updated: updateSection, check }));
+    process.exit(1);
+  }
+  unlinkSync(statePath);
+  registerDeliverable({ kind: 'doc-update', doc_id: uDocId, section: updateSection, blocks: expectedTotal, md: basename(mdPath) });
+  console.log(JSON.stringify({ ok: true, doc_id: uDocId, url: `https://my.feishu.cn/docx/${uDocId}`, updated: updateSection, blocks: expectedTotal, check }));
+  process.exit(0);
+}
 
 let state = null;
 if (!fresh && existsSync(statePath)) {
@@ -239,11 +384,11 @@ if (!docId) {
 }
 
 let next = state?.next || 0;
-if (next > 0) {
+if (next > 0 && next < units.length) {
   // 对账：「先发布后写断点」存在崩溃窗口——上次的单元可能已上到服务端但状态没落盘，
   // 直接续传会重复发布。数实际块数比期望多出恰好一个单元 → 视为已发布，跳过它。
   const expected = units.slice(0, next).reduce((n, u) => n + unitBlocks(u), 0);
-  const actual = await countChildren(tok, docId);
+  const actual = (await fetchRootChildren(tok, docId)).length;
   if (actual === expected + unitBlocks(units[next])) {
     console.error(`[publish] 对账：检测到断点窗口重复发布（实际 ${actual} > 期望 ${expected}），跳过已上送的单元`);
     next += 1;
@@ -257,19 +402,36 @@ if (next > 0) {
 }
 for (; next < units.length; next++) {
   const u = units[next];
-  if (u.kind === 'batch') await publishBatch(tok, docId, u.blocks);
-  else await publishTable(tok, docId, u.rows);
+  await withNetRetry(() => (u.kind === 'batch'
+    ? publishBatch(tok, docId, u.blocks)
+    : publishTable(tok, docId, u.rows)));
   // 每单元落盘断点：崩在这里重跑即从本单元继续
   writeFileSync(statePath, JSON.stringify({ doc_id: docId, next: next + 1 }));
   console.error(`[publish] ${next + 1}/${units.length} 单元完成（${u.kind === 'table' ? `表格 ${u.rows.length}行` : `${u.blocks.length} 块`}）`);
 }
 
-unlinkSync(statePath); // 全部发布完成，清掉断点文件
-const blockCount = units.reduce((n, u) => n + (u.kind === 'table' ? 1 : u.blocks.length), 0);
+// 发布后全量自检：不过关→非零退出，不登记注册表（半成品宁可不给）
+const blockCount = units.reduce((n, u) => n + unitBlocks(u), 0);
+const check = await verifyPublished(tok, docId, blockCount);
+if (check.errors.length) {
+  console.error(`[publish] 自检未通过：${check.errors.join('；')}（状态已保留，修复后重跑同命令核对）`);
+  console.log(JSON.stringify({ ok: false, doc_id: docId, url: `https://my.feishu.cn/docx/${docId}`, blocks: blockCount, check }));
+  process.exit(1);
+}
+unlinkSync(statePath); // 自检通过，清掉断点文件
+registerDeliverable({
+  kind: 'doc',
+  title: opt('title') || defaultTitle,
+  doc_id: docId,
+  url: `https://my.feishu.cn/docx/${docId}`,
+  blocks: blockCount,
+  md: basename(mdPath),
+});
 console.log(JSON.stringify({
   ok: true,
   doc_id: docId,
   url: `https://my.feishu.cn/docx/${docId}`,
   units: units.length,
   blocks: blockCount,
+  check,
 }));

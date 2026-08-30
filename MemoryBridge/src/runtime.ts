@@ -1,4 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createLarkChannel, defaultLogger, LoggerLevel, type LarkChannel } from '@larksuiteoapi/node-sdk';
 import { createClaudeRunner, type ClaudeRunner } from './claudeRunner.js';
 import { extractDriveFiles, openDocsFromText, rewriteFeishuHost } from './docShare.js';
@@ -12,6 +14,43 @@ const running = new Map<string, { channel: LarkChannel | null; error: string | n
 
 // 会话重置指令（整条消息只有指令本身才算，正文里提到不算）。
 const RESET_CMD_RE = /^\/?(?:重置|清空|reset|clear)(?:会话|上下文|对话|session|context)?$|^\/?(?:重新开始|新对话|新会话)$/i;
+
+// 帮助指令：能力边界 + 用法一句话。业务人员不读文档，指令自解释是唯一触达路径。
+const HELP_CMD_RE = /^\/?(?:help|帮助|怎么用|使用说明|你能做什么|你能干什么)$/i;
+const HELP_TEXT = [
+  '🤖 我能做什么：',
+  '• 生成/修改方案文档、PRD、交互原型（HTML 可点开演示）',
+  '• 查询项目记忆与知识库里的历史约定',
+  '',
+  '怎么用：',
+  '• 直接描述需求即可，长需求建议写清模块/页面/字段',
+  '• 改已有交付物：把文档链接 + 修改建议发给我，我会原地更新，不会另建新文档',
+  '• 发「重置会话」让我忘掉之前对话，重新开始',
+  '• 生成大文档耗时较长（10-40 分钟），期间卡片会报进度，请勿重复发送',
+].join('\n');
+
+// 已介绍过的用户（每 bot 一份，data/introduced-<botid>.json）——首条消息自动自我介绍。
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
+function introducedPath(botId: string): string {
+  return join(DATA_DIR, `introduced-${botId}.json`);
+}
+function isIntroduced(botId: string, openId: string): boolean {
+  try {
+    const list = JSON.parse(readFileSync(introducedPath(botId), 'utf8')) as string[];
+    return Array.isArray(list) && list.includes(openId);
+  } catch { return false; }
+}
+function markIntroduced(botId: string, openId: string): void {
+  try {
+    let list: string[] = [];
+    try { const j = JSON.parse(readFileSync(introducedPath(botId), 'utf8')); if (Array.isArray(j)) list = j; } catch { /* 首次 */ }
+    if (!list.includes(openId)) {
+      list.push(openId);
+      mkdirSync(DATA_DIR, { recursive: true });
+      writeFileSync(introducedPath(botId), JSON.stringify(list));
+    }
+  } catch { /* 介绍标记失败不影响主流程 */ }
+}
 
 // 包装 SDK logger，过滤「no <raw事件> handle」这类无 slot 原始事件的无害告警。
 function silentNoHandleWarn() {
@@ -202,6 +241,22 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
         await channel.send(msg.chatId, { markdown: text }, { replyTo: msg.messageId });
       } catch (err) { console.warn(`[${bot.id}] 重置回复失败`, err instanceof Error ? err.message : String(err)); }
       return;
+    }
+
+    // 帮助指令：不进生成队列，直接回能力说明。
+    if (HELP_CMD_RE.test(String(msg.content ?? '').trim())) {
+      try {
+        await channel.send(msg.chatId, { markdown: HELP_TEXT }, { replyTo: msg.messageId });
+      } catch (err) { console.warn(`[${bot.id}] help 回复失败`, err instanceof Error ? err.message : String(err)); }
+      return;
+    }
+
+    // 新用户首条消息：先发一次自我介绍（不拦消息，正常进队列）。
+    if (!isIntroduced(bot.id, msg.senderId)) {
+      markIntroduced(bot.id, msg.senderId);
+      try {
+        await channel.send(msg.chatId, { markdown: HELP_TEXT }, { replyTo: msg.messageId });
+      } catch (err) { console.warn(`[${bot.id}] 介绍发送失败`, err instanceof Error ? err.message : String(err)); }
     }
 
     enqueue(bot.id, {

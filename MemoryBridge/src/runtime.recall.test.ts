@@ -252,6 +252,24 @@ describe('im.message.recalled_v1 三分支', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it('/help → 回能力说明不进队列；首条消息自动自我介绍且只发一次', async () => {
+    await boot();
+    const msgHandler = h.onHandlers.get('message')!;
+    msgHandler({ messageId: 'om_h', senderId: 'ou_9', senderName: '新用户', chatId: 'oc_1', content: '/help' });
+    expect(h.send).toHaveBeenCalledWith('oc_1', { markdown: expect.stringContaining('我能做什么') }, expect.anything());
+    expect(enqueue).not.toHaveBeenCalled();
+
+    // 同一新用户的首条正常消息：自我介绍 + 正常入队
+    h.send.mockClear();
+    await msgHandler({ messageId: 'om_i', senderId: 'ou_9', senderName: '新用户', chatId: 'oc_1', content: '做个方案' });
+    expect(h.send).toHaveBeenCalledWith('oc_1', { markdown: expect.stringContaining('我能做什么') }, expect.anything());
+    expect(enqueue).toHaveBeenCalledWith('b1', expect.objectContaining({ id: 'om_i' }));
+    // 第二条消息不再重复介绍
+    h.send.mockClear();
+    await msgHandler({ messageId: 'om_j', senderId: 'ou_9', senderName: '新用户', chatId: 'oc_1', content: '再来一个' });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
   it('排队超过 2 条 → 回「请勿重复发送」，1 条时不打扰', async () => {
     enqueue.mockImplementation((_bot: string, m: { id: string }) => { queue.push(m); });
     await boot();
