@@ -88,6 +88,10 @@ function parseMd(md) {
   const flush = () => {
     if (batch.length) { units.push({ kind: 'batch', blocks: batch }); batch = []; }
   };
+  const push = (block) => {
+    batch.push(block);
+    if (batch.length >= BATCH) flush();  // children 单批上限 50（99992402），留余量切 40
+  };
 
   while (i < lines.length) {
     const line = lines[i];
@@ -95,37 +99,37 @@ function parseMd(md) {
     const h = /^(#{1,6})\s+(.*)$/.exec(line);
     if (h) {
       const lv = h[1].length;
-      batch.push({ block_type: 2 + lv, [`heading${lv}`]: { elements: parseRuns(h[2]) } });
+      push({ block_type: 2 + lv, [`heading${lv}`]: { elements: parseRuns(h[2]) } });
       i += 1;
       continue;
     }
     if (/^(---+|\*\*\*+)\s*$/.test(line)) {
-      batch.push({ block_type: 22, divider: {} });  // 实测 key 是 divider，不是 horizontal
+      push({ block_type: 22, divider: {} });  // 实测 key 是 divider，不是 horizontal
       i += 1;
       continue;
     }
     const todo = /^[-*]\s+\[([ xX])\]\s+(.*)$/.exec(line);
     if (todo) {
-      batch.push({ block_type: 17, todo: { style: { done: todo[1].toLowerCase() === 'x' }, elements: parseRuns(todo[2]) } });
+      push({ block_type: 17, todo: { style: { done: todo[1].toLowerCase() === 'x' }, elements: parseRuns(todo[2]) } });
       i += 1;
       continue;
     }
     const bullet = /^[-*+]\s+(.*)$/.exec(line);
     if (bullet) {
-      batch.push({ block_type: 12, bullet: { elements: parseRuns(bullet[1]) } });
+      push({ block_type: 12, bullet: { elements: parseRuns(bullet[1]) } });
       i += 1;
       continue;
     }
     const ord = /^\d+[.)]\s+(.*)$/.exec(line);
     if (ord) {
-      batch.push({ block_type: 13, ordered: { elements: parseRuns(ord[1]) } });
+      push({ block_type: 13, ordered: { elements: parseRuns(ord[1]) } });
       i += 1;
       continue;
     }
     const quote = /^>\s?(.*)$/.exec(line);
     if (quote) {
       // 引用块创建需要 34 容器 + 子块两跳，方案文档里是装饰性内容，降级为斜体段落
-      batch.push({ block_type: 2, text: { elements: [{ text_run: { content: quote[1], text_element_style: { italic: true } } }] } });
+      push({ block_type: 2, text: { elements: [{ text_run: { content: quote[1], text_element_style: { italic: true } } }] } });
       i += 1;
       continue;
     }
@@ -136,7 +140,7 @@ function parseMd(md) {
       while (i < lines.length && !lines[i].startsWith('```')) { body.push(lines[i]); i += 1; }
       i += 1;
       // 1 = PlainText；代码高亮枚举拿不准时不猜，纯文本最稳
-      batch.push({ block_type: 14, code: { language: 1, elements: [plain(body.join('\n') || ' ')] } });
+      push({ block_type: 14, code: { language: 1, elements: [plain(body.join('\n') || ' ')] } });
       void lang;
       continue;
     }
@@ -152,7 +156,7 @@ function parseMd(md) {
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
-    batch.push({ block_type: 2, text: { elements: parseRuns(line) } });
+    push({ block_type: 2, text: { elements: parseRuns(line) } });
     i += 1;
   }
   flush();
