@@ -98,8 +98,15 @@ async function insertFile(tok, docId, filePath) {
     body: JSON.stringify({ children: [{ block_type: 23, file: {} }] }),
   }).then((r) => r.json());
   if (created.code !== 0) throw new Error(`create file block: ${JSON.stringify(created)}`);
-  const fileBlock = created.data.children.find((b) => b.block_type === 23);
-  if (!fileBlock) throw new Error(`no file block: ${JSON.stringify(created)}`);
+  // API 实际返回的是 33(view) 容器，真正的 file 块是它的第一个子块。
+  // 直接拿 view 的 block_id 去 replace_file 会报 1770025 "operation and block not match"，
+  // 文档里留下打不开的空壳附件块（2026-08-30 排查实证）。
+  let fileBlock = created.data.children.find((b) => b.block_type === 23);
+  if (!fileBlock) {
+    const innerId = created.data.children[0]?.children?.[0];
+    if (!innerId) throw new Error(`no file block: ${JSON.stringify(created)}`);
+    fileBlock = { block_id: innerId };
+  }
 
   const fileToken = await uploadMedia(tok, 'docx_file', fileBlock.block_id, filePath);
 
