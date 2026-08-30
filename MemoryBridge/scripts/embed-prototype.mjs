@@ -54,6 +54,32 @@ async function uploadMedia(tok, parentType, parentNode, filePath) {
   return uploaded.data.file_token;
 }
 
+// 失败回滚：删掉刚建的空块，避免文档里留下打不开的空壳附件/图片占位。
+// 回滚本身 best-effort，不许掩盖原始错误。
+async function deleteBlocks(tok, docId, blockIds) {
+  for (const id of blockIds) {
+    try {
+      const r = await fetch(`${API}/docx/v1/documents/${docId}/blocks/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${tok}` },
+      }).then((r) => r.json());
+      if (r.code !== 0) console.warn(`rollback delete ${id}:`, JSON.stringify(r));
+    } catch (e) {
+      console.warn(`rollback delete ${id}:`, e.message);
+    }
+  }
+}
+
+// 绑定后验证：块上 token 真的非空才算成功。飞书 API 存在「code 0 但没绑上」的静默失败。
+async function verifyBlock(tok, docId, blockId, kind) {
+  const b = await fetch(`${API}/docx/v1/documents/${docId}/blocks/${blockId}`, {
+    headers: { Authorization: `Bearer ${tok}` },
+  }).then((r) => r.json());
+  const token = b?.data?.block?.[kind]?.token;
+  if (!token) throw new Error(`verify: ${kind} token empty after bind: ${JSON.stringify(b)}`);
+  return token;
+}
+
 async function insertImage(tok, docId, pngPath, caption) {
   const jsonHeaders = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
   const children = [];
@@ -75,14 +101,19 @@ async function insertImage(tok, docId, pngPath, caption) {
   const imgBlock = created.data.children.find((b) => b.block_type === 27);
   if (!imgBlock) throw new Error(`no image block: ${JSON.stringify(created)}`);
 
-  const fileToken = await uploadMedia(tok, 'docx_image', imgBlock.block_id, pngPath);
-
-  const patched = await fetch(`${API}/docx/v1/documents/${docId}/blocks/${imgBlock.block_id}`, {
-    method: 'PATCH',
-    headers: jsonHeaders,
-    body: JSON.stringify({ replace_image: { token: fileToken } }),
-  }).then((r) => r.json());
-  if (patched.code !== 0) throw new Error(`patch: ${JSON.stringify(patched)}`);
+  try {
+    const fileToken = await uploadMedia(tok, 'docx_image', imgBlock.block_id, pngPath);
+    const patched = await fetch(`${API}/docx/v1/documents/${docId}/blocks/${imgBlock.block_id}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ replace_image: { token: fileToken } }),
+    }).then((r) => r.json());
+    if (patched.code !== 0) throw new Error(`patch: ${JSON.stringify(patched)}`);
+    await verifyBlock(tok, docId, imgBlock.block_id, 'image');
+  } catch (err) {
+    await deleteBlocks(tok, docId, [imgBlock.block_id]);
+    throw err;
+  }
   return imgBlock.block_id;
 }
 
@@ -103,19 +134,26 @@ async function insertFile(tok, docId, filePath) {
   // 文档里留下打不开的空壳附件块（2026-08-30 排查实证）。
   let fileBlock = created.data.children.find((b) => b.block_type === 23);
   if (!fileBlock) {
-    const innerId = created.data.children[0]?.children?.[0];
+    const view = created.data.children[0];
+    const innerId = view?.children?.[0];
     if (!innerId) throw new Error(`no file block: ${JSON.stringify(created)}`);
     fileBlock = { block_id: innerId };
   }
 
-  const fileToken = await uploadMedia(tok, 'docx_file', fileBlock.block_id, filePath);
-
-  const patched = await fetch(`${API}/docx/v1/documents/${docId}/blocks/batch_update`, {
-    method: 'PATCH',
-    headers: jsonHeaders,
-    body: JSON.stringify({ requests: [{ block_id: fileBlock.block_id, replace_file: { token: fileToken } }] }),
-  }).then((r) => r.json());
-  if (patched.code !== 0) throw new Error(`patch file: ${JSON.stringify(patched)}`);
+  try {
+    const fileToken = await uploadMedia(tok, 'docx_file', fileBlock.block_id, filePath);
+    const patched = await fetch(`${API}/docx/v1/documents/${docId}/blocks/batch_update`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ requests: [{ block_id: fileBlock.block_id, replace_file: { token: fileToken } }] }),
+    }).then((r) => r.json());
+    if (patched.code !== 0) throw new Error(`patch file: ${JSON.stringify(patched)}`);
+    await verifyBlock(tok, docId, fileBlock.block_id, 'file');
+  } catch (err) {
+    // 回滚删 view 容器（连带内层 file 块），不留空壳
+    await deleteBlocks(tok, docId, [created.data.children[0].block_id]);
+    throw err;
+  }
   return fileBlock.block_id;
 }
 
