@@ -201,10 +201,23 @@ async function publishTable(tok, docId, rows) {
   return tableBlock.block_id;
 }
 
+// 数文档根级块总数（分页）。续传对账用。
+async function countChildren(tok, docId) {
+  let n = 0;
+  let pageToken = '';
+  for (;;) {
+    const d = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${docId}/children?page_size=200${pageToken}`);
+    n += d.items.length;
+    if (!d.page_token || !d.has_more) return n;
+    pageToken = `&page_token=${d.page_token}`;
+  }
+}
+
 // ---------- 主流程（断点续传）----------
 const md = readFileSync(mdPath, 'utf8');
 const units = parseMd(md);
 const defaultTitle = (/^#\s+(.+)$/m.exec(md) || [, basename(mdPath).replace(/\.md$/i, '')])[1];
+const unitBlocks = (u) => (u.kind === 'table' ? 1 : u.blocks.length);
 
 const tok = await tenantToken();
 
@@ -225,8 +238,23 @@ if (!docId) {
   console.error(`[publish] 追加到指定文档 ${overrideId}`);
 }
 
-let next = state.next || 0;
-if (next > 0) console.error(`[publish] 断点续传：从第 ${next}/${units.length} 单元继续`);
+let next = state?.next || 0;
+if (next > 0) {
+  // 对账：「先发布后写断点」存在崩溃窗口——上次的单元可能已上到服务端但状态没落盘，
+  // 直接续传会重复发布。数实际块数比期望多出恰好一个单元 → 视为已发布，跳过它。
+  const expected = units.slice(0, next).reduce((n, u) => n + unitBlocks(u), 0);
+  const actual = await countChildren(tok, docId);
+  if (actual === expected + unitBlocks(units[next])) {
+    console.error(`[publish] 对账：检测到断点窗口重复发布（实际 ${actual} > 期望 ${expected}），跳过已上送的单元`);
+    next += 1;
+    writeFileSync(statePath, JSON.stringify({ doc_id: docId, next }));
+  } else if (actual !== expected) {
+    // 对不上账（多了不完整的单元或人为编辑过）：不盲目续传，交给人决定
+    console.error(`[publish] 对账失败：文档实际 ${actual} 块，断点期望 ${expected} 块。文档可能被手动编辑过，请检查后用 --doc-id 重发。`);
+    process.exit(1);
+  }
+  console.error(`[publish] 断点续传：从第 ${next}/${units.length} 单元继续`);
+}
 for (; next < units.length; next++) {
   const u = units[next];
   if (u.kind === 'batch') await publishBatch(tok, docId, u.blocks);
