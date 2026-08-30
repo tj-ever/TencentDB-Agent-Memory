@@ -27,8 +27,58 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 若注入工具的 url 在当前环境不可达（如 host.docker.internal），改用 127.0.0.1 或同网络容器名（tdai-proxy / tdai-memory-core）重试后再报告失败。
 查不到才说「暂无记录」，禁止编造。
 
+【工具与技能】
+- 只能调用工具列表里实际存在的名称；报「Unknown tool / Unknown skill」即该名称不存在，禁止换相近名字反复猜。
+- 需要记忆/知识库能力但没找到对应工具时如实说明，禁止编造工具名。
+
 【回答】
 - 直接、简洁地回答用户问题，不要输出工具调用语法或 XML 标签。`;
+}
+
+// MiniMax 系上游把推理过程内联在正文里（<mm:think>…</mm:think>），
+// 流式增量与最终文本都必须剥掉，否则推理原文直接刷到用户卡片。
+export function createThinkFilter(): { push(chunk: string): string; flush(): string } {
+  const OPEN = '<mm:think>';
+  const CLOSE = '</mm:think>';
+  let inThink = false;
+  let hold = ''; // 末尾疑似半个标签的片段，扣下等下一个增量再判
+  const push = (chunk: string): string => {
+    let s = hold + chunk;
+    hold = '';
+    let out = '';
+    for (;;) {
+      const tag = inThink ? CLOSE : OPEN;
+      const i = s.indexOf(tag);
+      if (i < 0) break;
+      if (!inThink) out += s.slice(0, i);
+      s = s.slice(i + tag.length);
+      inThink = !inThink;
+    }
+    // 尾部可能是半个标签（增量边界切在标签中间）：扣住，其余按模式放行/丢弃。
+    const tag = inThink ? CLOSE : OPEN;
+    for (let k = Math.min(s.length, tag.length - 1); k > 0; k--) {
+      if (tag.startsWith(s.slice(-k))) { hold = s.slice(-k); s = s.slice(0, -k); break; }
+    }
+    if (!inThink) out += s;
+    return out;
+  };
+  // 流结束：扣着的尾巴按字面放行；think 未闭合则丢弃剩余。
+  const flush = (): string => {
+    const rest = hold;
+    hold = '';
+    return inThink ? '' : rest;
+  };
+  return { push, flush };
+}
+
+const THINK_RE = /<mm:think>[\s\S]*?<\/mm:think>/g;
+
+// 配额耗尽时 claude CLI 会把英文 "API Error: …(429)… reset at …" 当正文吐出，
+// 转成用户能看懂的中文提示（含重置时间）。
+export function friendlyUpstreamError(text: string): string | null {
+  if (!/^API Error/i.test(text.trim())) return null;
+  const m = /reset at ([\d:\- +]+)/.exec(text);
+  return `⏳ 上游模型额度暂时用尽${m ? `（预计 ${m[1]!.trim()} 恢复）` : ''}，请稍后重新发送需求。`;
 }
 
 type Delta =
@@ -145,6 +195,9 @@ export function createClaudeRunner({
         // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
         // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。
         CLAUDE_CODE_MAX_RETRIES: process.env.CLAUDE_CODE_MAX_RETRIES || '10',
+        // claude 默认 Bash 超时 2min，整篇文档发布这类长脚本会被 SIGTERM(143) 砍成半成品，放宽到 10min。
+        BASH_DEFAULT_TIMEOUT_MS: process.env.BASH_DEFAULT_TIMEOUT_MS || '600000',
+        BASH_MAX_TIMEOUT_MS: process.env.BASH_MAX_TIMEOUT_MS || '1200000',
       };
 
       const extra = sessionArgv(workDir, sessionId);
@@ -168,10 +221,25 @@ export function createClaudeRunner({
       let gotPartial = false;
       let finalResult = '';
       let push = Promise.resolve();
+      const think = createThinkFilter();
+      // 回复开头先攒 32 字符再放行：判断是不是上游错误文本（API Error…429），
+      // 是则整段拦下，不让英文报错刷到卡片。短回复由 close 时补发。
+      let head: string | null = '';
+      let quotaMsg: string | null = null;
 
       function emit(text: string) {
         if (!text) return;
-        visible += text;
+        const out = think.push(text);
+        visible += out;
+        if (!out || quotaMsg) return;
+        if (head !== null) {
+          head += out;
+          if (head.length < 32) return;
+          const bad = friendlyUpstreamError(head);
+          if (bad) { quotaMsg = bad; notify(bad); return; }
+          text = head;
+          head = null;
+        }
         if (onDelta) push = push.then(() => onDelta(text)).catch(() => {});
       }
 
@@ -208,7 +276,7 @@ export function createClaudeRunner({
           }
           return;
         }
-        if (delta.kind === 'result') finalResult = delta.text;
+        if (delta.kind === 'result') finalResult = delta.text.replace(THINK_RE, '');
       }
 
       child.stdout.on('data', (d) => {
@@ -242,12 +310,21 @@ export function createClaudeRunner({
         if (tail) {
           try { handleEvent(JSON.parse(tail)); } catch { /* ignore */ }
         }
+        // 流结束时还扣着的半个标签尾巴按字面放行
+        const tailThink = think.flush();
+        if (tailThink) emit(tailThink);
+        // 短回复（不足 32 字符）开头缓冲没放行过，close 时补发给卡片
+        if (head !== null && head && !quotaMsg) {
+          const rest = head;
+          if (onDelta) push = push.then(() => onDelta(rest)).catch(() => {});
+        }
         push.then(() => {
           if (signal?.aborted) {
             settle(reject, abortError(signal));
             return;
           }
-          const text = (visible || finalResult).trim();
+          const raw = (visible || finalResult).trim();
+          const text = quotaMsg ?? friendlyUpstreamError(raw) ?? raw;
           if (code === 0 || text) settle(resolve, text);
           else settle(reject, new Error(`claude exit ${code}`));
         }, (err: unknown) => settle(reject, err));

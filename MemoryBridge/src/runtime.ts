@@ -103,7 +103,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
             const fresh = extractDriveFiles(streamedText).filter((f) => !seenShare.has(f.id));
             for (const f of fresh) {
               seenShare.add(f.id);
-              await shareDocs(`https://www.feishu.cn/${f.type === 'sheet' ? 'sheets' : 'docx'}/${f.id}`, p);
+              await shareDocs(`https://www.feishu.cn/${f.type === 'file' ? 'file' : f.type === 'sheet' ? 'sheets' : 'docx'}/${f.id}`, p);
             }
           },
           p.chatId,

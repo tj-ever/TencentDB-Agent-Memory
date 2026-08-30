@@ -8,9 +8,11 @@ const PUBLIC_BODY = {
   share_entity: 'anyone',
 };
 
-const TYPE_RE = /(?:https?:\/\/[^\s)\]>'"]*\/)?(docx|sheets)\/([A-Za-z0-9]{20,32})/g;
+// file = 文档里的附件块（/file/<token>），与 docx/sheets 一样需要提权才能被外链用户打开
+// （2026-08-30 实测 permission API 对附件 token 接受 type=file）。
+const TYPE_RE = /(?:https?:\/\/[^\s)\]>'"]*\/)?(docx|sheets|file)\/([A-Za-z0-9]{20,32})/g;
 
-export interface DriveFile { id: string; type: 'docx' | 'sheet'; }
+export interface DriveFile { id: string; type: 'docx' | 'sheet' | 'file'; }
 
 export interface FeishuCreds {
   app_id: string;
@@ -24,7 +26,7 @@ export function extractDriveFiles(text: string | null | undefined): DriveFile[] 
   const re = new RegExp(TYPE_RE);
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
-    const kind = m[1] === 'sheets' ? 'sheet' : 'docx';
+    const kind = m[1] === 'sheets' ? 'sheet' : (m[1] as DriveFile['type']);
     const key = `${kind}:${m[2]}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -60,7 +62,7 @@ async function tenantToken(feishu: FeishuCreds): Promise<string> {
 
 export interface DocShareResult {
   id: string;
-  type: 'docx' | 'sheet';
+  type: 'docx' | 'sheet' | 'file';
   user?: unknown;
   chat?: unknown;
   public?: unknown;
