@@ -11,6 +11,7 @@ import { resolveSessionId, sessionArgv, SESSION_MODE_LABEL, withSessionLock, typ
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const DEFAULT_CLAUDE = process.env.CLAUDE_BIN || 'claude';
 const EMBED_SCRIPT = join(__dirname, '..', 'scripts', 'embed-prototype.mjs');
+const PUBLISH_SCRIPT = join(__dirname, '..', 'scripts', 'publish-doc.mjs');
 
 const BASE_REQUIREMENTS = '始终使用简体中文回复用户，不要用英文或中英混杂。';
 
@@ -30,6 +31,11 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 【工具与技能】
 - 只能调用工具列表里实际存在的名称；报「Unknown tool / Unknown skill」即该名称不存在，禁止换相近名字反复猜。
 - 需要记忆/知识库能力但没找到对应工具时如实说明，禁止编造工具名。
+
+【飞书交付】
+- 整篇文档正文发布：node "$FEISHU_PUBLISH_DOC" <markdown文件> [--title 标题]。分批 + 断点续传，中途失败重跑同命令即从断点继续。禁止手写建文档/建块的内联脚本。
+- 原型截图 + HTML 附件：node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> [小标题]。
+- 文档链接原样输出 https://my.feishu.cn/docx/<文档id>，权限会自动放开。
 
 【回答】
 - 直接、简洁地回答用户问题，不要输出工具调用语法或 XML 标签。`;
@@ -191,6 +197,7 @@ export function createClaudeRunner({
         FEISHU_OPEN_ID: conversationId,
         FEISHU_CHAT_ID: chatId || '',
         FEISHU_EMBED_PROTOTYPE: EMBED_SCRIPT,
+        FEISHU_PUBLISH_DOC: PUBLISH_SCRIPT,
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '500000',
         // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
         // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。

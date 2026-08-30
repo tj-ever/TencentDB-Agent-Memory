@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const h = vi.hoisted(() => ({
   onHandlers: new Map<string, (...args: unknown[]) => unknown>(),
   gate: null as null | (() => void),
+  send: vi.fn(async () => {}),
 }));
 
 // ── streamRotate.openCard 挂死回归（真模块，绕过全局 mock）─────────────────
@@ -53,6 +54,68 @@ describe('中止尾注', () => {
   });
 });
 
+// ── 长任务心跳（真模块）：静默超时补运行时长行，有增量则不打扰 ────────────────
+describe('长任务心跳', () => {
+  it('静默超过 heartbeatMs → 卡片补「已运行 X 分钟」；真实增量会重置静默计时', async () => {
+    const { runWithRotatingMarkdown } = await vi.importActual<typeof import('./streamRotate.js')>('./streamRotate.js');
+    const append = vi.fn(async () => {});
+    const ctl = { append, setContent: vi.fn(async () => {}) };
+    const channel = {
+      stream: (_to: unknown, input: { markdown: (c: unknown) => Promise<void> }) => input.markdown(ctl),
+    } as unknown as Parameters<typeof runWithRotatingMarkdown>[0];
+    const timers: Array<() => void> = [];
+    let now = 0;
+    let release!: () => void;
+    const p = runWithRotatingMarkdown(channel, 'oc_1', undefined, async (c) => {
+      await new Promise<void>((r) => { release = r; });
+      await c.append('真实增量');     // 重置静默计时
+      return 'done';
+    }, {
+      rotateMs: 1e12,
+      heartbeatMs: 60_000,
+      setTimer: (fn: () => void) => { timers.push(fn); return fn as unknown as ReturnType<typeof setTimeout>; },
+      clearTimer: () => {},
+      now: () => now,
+    });
+    // timers[0]=rotate（不触发），timers[1]=heartbeat；openCard 异步挂表，先等挂好
+    await vi.waitFor(() => expect(timers.length).toBeGreaterThanOrEqual(2));
+    now = 100_000;                    // 静默 100s > 60s
+    timers[1]!();
+    await vi.waitFor(() => expect(append).toHaveBeenCalledWith(expect.stringContaining('已运行 2 分钟')));
+    release!();
+    expect(await p).toBe('done');
+  });
+
+  it('真实增量不断流 → 心跳定时器到点但静默不足，不写卡片', async () => {
+    const { runWithRotatingMarkdown } = await vi.importActual<typeof import('./streamRotate.js')>('./streamRotate.js');
+    const append = vi.fn(async () => {});
+    const ctl = { append, setContent: vi.fn(async () => {}) };
+    const channel = {
+      stream: (_to: unknown, input: { markdown: (c: unknown) => Promise<void> }) => input.markdown(ctl),
+    } as unknown as Parameters<typeof runWithRotatingMarkdown>[0];
+    const timers: Array<() => void> = [];
+    let now = 0;
+    let release!: () => void;
+    const p = runWithRotatingMarkdown(channel, 'oc_1', undefined, async () => {
+      await new Promise<void>((r) => { release = r; });
+      return 'done';
+    }, {
+      rotateMs: 1e12,
+      heartbeatMs: 60_000,
+      setTimer: (fn: () => void) => { timers.push(fn); return fn as unknown as ReturnType<typeof setTimeout>; },
+      clearTimer: () => {},
+      now: () => now,
+    });
+    await vi.waitFor(() => expect(timers.length).toBeGreaterThanOrEqual(2));
+    now = 30_000;                     // 静默只有 30s < 60s
+    timers[1]!();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(append).not.toHaveBeenCalled();
+    release!();
+    expect(await p).toBe('done');
+  });
+});
+
 // ── 撤回事件三分支（经由真实 startBot → attach 装配）──────────────────────
 const connectMock = vi.fn<() => Promise<void>>();
 const enqueue = vi.fn();
@@ -64,6 +127,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
   createLarkChannel: vi.fn(() => ({
     connect: connectMock,
     disconnect: vi.fn(),
+    send: h.send,
     on: (ev: string, fn: (...args: unknown[]) => unknown) => { h.onHandlers.set(ev, fn); },
     // attach 在底层 dispatcher 上补注册撤回事件；channel 不占用该 key。
     dispatcher: {
@@ -107,8 +171,7 @@ vi.mock('./sessionManager.js', () => ({
   clearBotSession: vi.fn(() => true),
   listBotSessions: vi.fn(() => []),
   rememberSessionUser: vi.fn(),
-}));
-vi.stubGlobal('fetch', vi.fn(async () => ({
+}));vi.stubGlobal('fetch', vi.fn(async () => ({
   ok: true, json: async () => ({ model: 'm1', supportsImages: false }),
 })));
 
@@ -132,6 +195,7 @@ describe('im.message.recalled_v1 三分支', () => {
     });
     h.onHandlers.clear();
     h.gate = null;
+    h.send.mockClear();
     recallHandler = undefined;
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -176,5 +240,32 @@ describe('im.message.recalled_v1 三分支', () => {
     recallHandler!({ message_id: 'om_gone' });
     expect(dequeue).not.toHaveBeenCalled();
     expect(() => recallHandler!({})).not.toThrow();
+  });
+
+  it('重置指令 → 清会话并回复确认，消息不进生成队列', async () => {
+    await boot();
+    const msgHandler = h.onHandlers.get('message')!;
+    msgHandler({ messageId: 'om_r', senderId: 'ou_1', senderName: 'u', chatId: 'oc_1', content: '重置会话' });
+    const { clearBotSession } = await import('./sessionManager.js');
+    expect(vi.mocked(clearBotSession)).toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledWith('oc_1', { markdown: expect.stringContaining('已清空会话上下文') }, expect.anything());
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('排队超过 2 条 → 回「请勿重复发送」，1 条时不打扰', async () => {
+    enqueue.mockImplementation((_bot: string, m: { id: string }) => { queue.push(m); });
+    await boot();
+    const msgHandler = h.onHandlers.get('message')!;
+    // 队列消化被 gate 挂住（生成中），保持积压状态
+    queue = [{ id: 'om_1' }, { id: 'om_2' }];
+    msgHandler({ messageId: 'om_3', senderId: 'ou_1', senderName: 'u', chatId: 'oc_1', content: '第3条' });
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith('oc_1', { markdown: expect.stringContaining('请勿重复发送') }, expect.anything()));
+    // 单条消息正常排队，无提示
+    h.send.mockClear();
+    queue = [{ id: 'om_9' }];
+    msgHandler({ messageId: 'om_10', senderId: 'ou_1', senderName: 'u', chatId: 'oc_1', content: '普通' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.send).not.toHaveBeenCalled();
+    await vi.waitFor(() => { if (h.gate) h.gate(); expect(queue).toEqual([]); });  // 放行泵收尾
   });
 });

@@ -10,6 +10,9 @@ import { clearBotSession as clearSession, listBotSessions, rememberSessionUser, 
 
 const running = new Map<string, { channel: LarkChannel | null; error: string | null; abort?: () => boolean }>();
 
+// 会话重置指令（整条消息只有指令本身才算，正文里提到不算）。
+const RESET_CMD_RE = /^\/?(?:重置|清空|reset|clear)(?:会话|上下文|对话|session|context)?$|^\/?(?:重新开始|新对话|新会话)$/i;
+
 // 包装 SDK logger，过滤「no <raw事件> handle」这类无 slot 原始事件的无害告警。
 function silentNoHandleWarn() {
   return {
@@ -70,6 +73,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
   let currentAbort: AbortController | null = null;
   let currentMsgId: string | null = null;   // 正在处理的消息 id（撤回时用来区分「生成中」和「排队中」）
   let recalledMsgId: string | null = null;  // 生成中被撤回的消息 id：abort 后 processOne 据此静默跳过
+  let queueNoticeSent = false;              // 排队积压提示已发过（队列消化到 ≤2 条后重置）
 
   // 处理队列里的单条消息（含图片拒绝 + 流式回复 + 错误重试）。
   async function processOne(p: PendingMsg) {
@@ -170,6 +174,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
       while (true) {
         const pending = loadQueue(bot.id);
         if (pending.length === 0) break;
+        if (pending.length <= 2) queueNoticeSent = false;  // 队列消化，重置排队提示
         const msg = pending[0]!;
         await pumpWithTimeout(msg);
         dequeue(bot.id, msg.id);
@@ -185,6 +190,20 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     // 记下「会话 → 用户名」映射，供会话管理展示具体姓名而非 open_id。
     const sid = resolveSessionId({ mode: bot.session_mode, botName: bot.name, userId: msg.senderId, chatId: msg.chatId });
     if (sid) rememberSessionUser(sid, msg.senderId, msg.senderName ?? '');
+
+    // 会话重置指令：清掉本会话文件，下一条消息全新开始（否则按人续聊会让用户
+    // 感觉「机器人记着旧账」，只能去面板清）。整条指令消息不进生成队列。
+    if (RESET_CMD_RE.test(String(msg.content ?? '').trim())) {
+      const ok = sid ? clearSession(bot, sid) : false;
+      const text = sid
+        ? (ok ? '✅ 已清空会话上下文，下一条消息开始全新对话。' : '当前没有可清空的会话记录。')
+        : '当前是逐条新开模式，本来就没有会话上下文。';
+      try {
+        await channel.send(msg.chatId, { markdown: text }, { replyTo: msg.messageId });
+      } catch (err) { console.warn(`[${bot.id}] 重置回复失败`, err instanceof Error ? err.message : String(err)); }
+      return;
+    }
+
     enqueue(bot.id, {
       id: msg.messageId,
       senderId: msg.senderId,
@@ -194,6 +213,19 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
       ts: Date.now(),
       image,
     });
+    // 排队去抖：积压超过 2 条时提醒一次（队列消化到 ≤2 条后重置），避免用户等不到
+    // 回复就连发（上周实测同一请求连发 4 次）。
+    const pending = loadQueue(bot.id);
+    if (pending.length > 2 && !queueNoticeSent) {
+      queueNoticeSent = true;
+      try {
+        await channel.send(
+          msg.chatId,
+          { markdown: `⏳ 你的消息已收到，前面还有 ${pending.length - 1} 条在排队处理（逐条串行回复）。请勿重复发送，稍候即可。` },
+          { replyTo: msg.messageId },
+        );
+      } catch (err) { console.warn(`[${bot.id}] 排队提示失败`, err instanceof Error ? err.message : String(err)); }
+    }
     await pump();
   });
 

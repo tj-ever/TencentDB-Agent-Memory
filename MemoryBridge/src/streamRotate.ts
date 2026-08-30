@@ -1,12 +1,16 @@
 // 飞书单张流式卡片约 10 分钟关流。9:30 收掉当前卡；有后续字再开一张（续）。
+// 长任务心跳：HEARTBEAT_MS 无增量时往卡片补一行运行时长，让用户知道还在干活。
 import type { LarkChannel, MarkdownStreamController, SendOptions } from '@larksuiteoapi/node-sdk';
 
 export const STREAM_ROTATE_MS = 9 * 60 * 1000 + 30 * 1000;
+export const HEARTBEAT_MS = 5 * 60 * 1000;
 
 interface RotateOpts {
   rotateMs?: number;
+  heartbeatMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
+  now?: () => number;
 }
 
 export interface StreamCtl {
@@ -22,8 +26,10 @@ export async function runWithRotatingMarkdown<T>(
   work: (ctl: StreamCtl) => Promise<T>,
   {
     rotateMs = STREAM_ROTATE_MS,
+    heartbeatMs = HEARTBEAT_MS,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
+    now = Date.now,
   }: RotateOpts = {},
 ): Promise<T> {
   const ac = new AbortController();
@@ -31,6 +37,8 @@ export async function runWithRotatingMarkdown<T>(
   let release: (() => void) | null = null;
   let streamDone: Promise<unknown> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let hbTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastAppend = now();
   let finished = false;
   let gate: Promise<unknown> = Promise.resolve();
   let cards = 0;
@@ -50,6 +58,24 @@ export async function runWithRotatingMarkdown<T>(
     }, rotateMs);
   }
 
+  // 心跳：距上一次真实增量超过 heartbeatMs 就补一行运行时长。
+  // 走 withCard 而非裸 ctl.append——卡片可能刚好在轮换窗口（ctl=null），
+  // 且轮换计数必须同步更新，否则会把心跳写进已关闭的流。
+  function armHeartbeat() {
+    hbTimer = setTimer(() => {
+      hbTimer = null;
+      if (finished || ac.signal.aborted) return;
+      const idle = now() - lastAppend;
+      if (idle < heartbeatMs) { armHeartbeat(); return; }
+      const mins = Math.round((now() - start) / 60000);
+      enqueue(() => withCard(`\n\n_⏳ 已运行 ${mins} 分钟，仍在生成中…_\n\n`, (c, text) => c.append(text)))
+        .then(() => { if (!finished) armHeartbeat(); })
+        .catch(() => { /* 心跳失败不致命 */ });
+    }, heartbeatMs - (now() - lastAppend));
+  }
+
+  const start = now();
+
   async function openCard() {
     let ready!: () => void;
     const readyP = new Promise<void>((r) => { ready = r; });
@@ -68,6 +94,7 @@ export async function runWithRotatingMarkdown<T>(
     if (!ctl) throw new Error('stream open failed');
     cards += 1;
     armTimer();
+    if (cards === 1) armHeartbeat();
   }
 
   async function rotate() {
@@ -97,8 +124,14 @@ export async function runWithRotatingMarkdown<T>(
 
   const wrapper: StreamCtl = {
     signal: ac.signal,
-    append: (chunk) => enqueue(() => withCard(chunk, (c, text) => c.append(text))),
-    setContent: (full) => enqueue(() => withCard(full, (c, text) => c.setContent(text))),
+    append: (chunk) => {
+      lastAppend = now();
+      return enqueue(() => withCard(chunk, (c, text) => c.append(text)));
+    },
+    setContent: (full) => {
+      lastAppend = now();
+      return enqueue(() => withCard(full, (c, text) => c.setContent(text)));
+    },
   };
 
   try {
@@ -120,6 +153,7 @@ export async function runWithRotatingMarkdown<T>(
   } finally {
     finished = true;
     if (timer) clearTimer(timer);
+    if (hbTimer) clearTimer(hbTimer);
     await enqueue(async () => {
       if (release) release();
       if (streamDone) await streamDone.catch(() => {});
