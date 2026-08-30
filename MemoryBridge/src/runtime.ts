@@ -231,8 +231,9 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
       if (!messageId) return;
       if (currentMsgId === messageId) {
         // 正在生成 → 杀掉 claude 子进程停止打字机；processOne 凭 recalledMsgId 静默跳过。
+        // abort 原因 'recalled' 会透传到卡片尾注（「消息已撤回，停止回复」）。
         recalledMsgId = messageId;
-        currentAbort?.abort();
+        currentAbort?.abort(new Error('recalled'));
         console.log(`[${bot.id}] 消息撤回(生成中)，中止生成 msg=${messageId}`);
         return;
       }

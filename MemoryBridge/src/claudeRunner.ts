@@ -111,6 +111,11 @@ export function createClaudeRunner({
   const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name)].join('\n\n');
   const MAX_RETRIES = 2;
 
+  // abort 原因透传：撤回中止（abort(new Error('recalled'))）与普通中止区分，
+  // 下游（streamRotate 卡片尾注）据此显示「消息已撤回」还是「已停止生成」。
+  const abortError = (signal: AbortSignal | undefined): Error =>
+    signal?.reason instanceof Error ? signal.reason : new Error('aborted');
+
   function attempt(
     userMessage: string,
     conversationId: string,
@@ -119,7 +124,7 @@ export function createClaudeRunner({
     signal: AbortSignal | undefined,
     sessionId: string | null,
   ): Promise<string> {
-    if (signal?.aborted) return Promise.reject(new Error('aborted'));
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     return new Promise((resolve, reject) => {
       const env = {
         ...process.env,
@@ -227,7 +232,7 @@ export function createClaudeRunner({
       };
       const onAbort = () => {
         try { child.kill('SIGTERM'); } catch { /* ignore */ }
-        settle(reject, new Error('aborted'));
+        settle(reject, abortError(signal));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -239,7 +244,7 @@ export function createClaudeRunner({
         }
         push.then(() => {
           if (signal?.aborted) {
-            settle(reject, new Error('aborted'));
+            settle(reject, abortError(signal));
             return;
           }
           const text = (visible || finalResult).trim();
@@ -275,7 +280,7 @@ export function createClaudeRunner({
           return await attempt(userMessage, conversationId, wrapped, chatId, signal, sessionId);
         } catch (err) {
           lastErr = err;
-          if (!(err instanceof Error) || streamed || err.message === 'aborted') break;
+          if (!(err instanceof Error) || streamed || signal?.aborted) break;
           console.warn(`[claude] 第${i + 1}次失败，重试中: ${err.message.slice(0, 80)}`);
           await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
         }

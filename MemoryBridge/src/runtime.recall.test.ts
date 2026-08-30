@@ -31,6 +31,28 @@ describe('openCard 撤回挂死回归', () => {
   });
 });
 
+// ── 中止尾注（真模块）：撤回/普通中止写对应说明，而非「处理失败」或 SDK 的 "(no content)" ──
+describe('中止尾注', () => {
+  it.each([
+    ['recalled', '消息已撤回'],
+    ['aborted', '已停止生成'],
+  ])('work 抛 %s → 卡片写对应说明', async (kind, expectText) => {
+    const { runWithRotatingMarkdown } = await vi.importActual<typeof import('./streamRotate.js')>('./streamRotate.js');
+    const append = vi.fn(async () => {});
+    const ctl = { append, setContent: vi.fn(async () => {}) };
+    // 卡片常驻：markdown 回调挂起直到 runWithRotatingMarkdown 的 finally 放行。
+    const channel = {
+      stream: (_to: unknown, input: { markdown: (c: unknown) => Promise<void> }) => input.markdown(ctl),
+    } as unknown as Parameters<typeof runWithRotatingMarkdown>[0];
+    const p = runWithRotatingMarkdown(channel, 'oc_1', undefined, async () => {
+      throw new Error(kind);
+    }, { rotateMs: 60_000 });
+    await expect(p).rejects.toThrow(kind);
+    expect(append).toHaveBeenCalledWith(expect.stringContaining(expectText));
+    expect(append).not.toHaveBeenCalledWith(expect.stringContaining('处理失败'));
+  });
+});
+
 // ── 撤回事件三分支（经由真实 startBot → attach 装配）──────────────────────
 const connectMock = vi.fn<() => Promise<void>>();
 const enqueue = vi.fn();

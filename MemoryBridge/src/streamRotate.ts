@@ -104,12 +104,16 @@ export async function runWithRotatingMarkdown<T>(
   try {
     return await work(wrapper);
   } catch (err) {
-    // 中止（撤回/面板 abort）不是失败：卡片停在已生成内容上正常收尾，不写错误尾注。
-    const aborted = err instanceof Error && err.message === 'aborted';
+    // 中止（撤回/面板 abort）不是失败：卡片停在已生成内容上，写一行说明而非错误尾注。
+    // 说明必须非空——零内容收尾时 SDK 会把卡片打成 "(no content)" 占位。
+    const kind = err instanceof Error ? err.message : '';
+    const tail = kind === 'recalled' ? '\n\n_（消息已撤回，停止回复）_'
+      : kind === 'aborted' ? '\n\n_（已停止生成）_'
+      : '\n\n_处理失败，请稍后再试。_';
     await enqueue(async () => {
       try {
         if (!ctl) await openCard();
-        await ctl?.append(aborted ? '' : '\n\n_处理失败，请稍后再试。_');
+        await ctl?.append(tail);
       } catch { /* ignore */ }
     });
     throw err;
