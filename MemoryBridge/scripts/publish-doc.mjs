@@ -165,14 +165,14 @@ function parseMd(md) {
 }
 
 // ---------- 发布 ----------
-async function publishBatch(tok, docId, blocks, index) {
-  await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children${index !== undefined ? `?index=${index}` : ''}`, { children: blocks });
+async function publishBatch(tok, docId, blocks) {
+  await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, { children: blocks });
 }
 
-async function publishTable(tok, docId, rows, index) {
+async function publishTable(tok, docId, rows) {
   const colSize = Math.max(...rows.map((r) => r.length));
   const norm = rows.map((r) => [...r, ...Array(colSize - r.length).fill('')]);
-  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children${index !== undefined ? `?index=${index}` : ''}`, {
+  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, {
     children: [{ block_type: 31, table: { property: { row_size: norm.length, column_size: colSize } } }],
   });
   const tableBlock = created.children[0];
@@ -271,13 +271,142 @@ const md = readFileSync(mdPath, 'utf8');
 validateSchema(md);
 const units = parseMd(md);
 const defaultTitle = (/^#\s+(.+)$/m.exec(md) || [, basename(mdPath).replace(/\.md$/i, '')])[1];
-const unitBlocks = (u) => (u.kind === 'table' ? 1 : u.blocks.length);
+const unitBlocks = (u) => (u.kind === 'batch' ? u.blocks.length : 1);
 
 const tok = await tenantToken();
 
-// ---------- 分段增量更新模式：--doc-id X --update-section "标题" ----------
-// md 只放替换后的该段内容（以锚点标题开头）。流程：定位锚点标题 → 删到下一个
-// 同级/更高级标题前 → 在原位依序插入新单元（带断点）。这是「按建议改=原地更新」的核心。
+// ---------- 尾部重建辅助（--update-section 用）----------
+// 背景：children 创建接口的 ?index= 实测无效（一律追加到文档末尾，2026-08-31 实证），
+// 原位插入不可行。可行方案 = 「删锚点起全部内容 → 依序追加 新段 + 重建尾部」。
+// 纯文本/表格直接重建；图片/附件块走「下载媒体 → 建空块 → 重传 → 重绑」
+// （同一 token 不能绑到第二个块，1770013 relation mismatch；块删除后媒体仍可下载）。
+
+const BLOCK_KEY = {
+  2: 'text', 3: 'heading1', 4: 'heading2', 5: 'heading3', 6: 'heading4',
+  7: 'heading5', 8: 'heading6', 9: 'heading7', 10: 'heading8', 11: 'heading9',
+  12: 'bullet', 13: 'ordered', 14: 'code', 17: 'todo',
+};
+
+async function downloadMedia(tok, token) {
+  const r = await fetch(`${API}/drive/v1/medias/${token}/download`, { headers: { Authorization: `Bearer ${tok}` } });
+  if (!r.ok) throw new Error(`下载媒体 ${token} 失败: HTTP ${r.status}`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function uploadBytes(tok, parentType, parentNode, name, buf) {
+  const form = new FormData();
+  form.set('file_name', name);
+  form.set('parent_type', parentType);
+  form.set('parent_node', parentNode);
+  form.set('size', String(buf.length));
+  form.set('file', new Blob([buf]), name);
+  const up = await fetch(`${API}/drive/v1/medias/upload_all`, {
+    method: 'POST', headers: { Authorization: `Bearer ${tok}` }, body: form,
+  }).then((r) => r.json());
+  if (up.code !== 0) throw new Error(`上传 ${name}: ${JSON.stringify(up).slice(0, 200)}`);
+  return up.data.file_token;
+}
+
+// 重建图片块：建空块 → 重传下载到的字节 → replace_image → 验证 token 非空
+async function rebuildImage(tok, docId, u) {
+  const buf = await downloadMedia(tok, u.token);
+  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, { children: [{ block_type: 27, image: {} }] });
+  const imgId = created.children[0].block_id;
+  try {
+    const fileToken = await uploadBytes(tok, 'docx_image', imgId, u.name, buf);
+    await api(tok, 'PATCH', `/docx/v1/documents/${docId}/blocks/${imgId}`, { replace_image: { token: fileToken } });
+    const b = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${imgId}`);
+    if (!b.block?.image?.token) throw new Error('图片块重绑后 token 为空');
+  } catch (err) {
+    try { await api(tok, 'DELETE', `/docx/v1/documents/${docId}/blocks/${imgId}`); } catch { /* best-effort */ }
+    throw err;
+  }
+}
+
+// 重建附件块：建 {23,file}（返回 33 view 容器，真正 file 块是第一个子块）→ 重传 → replace_file
+async function rebuildFile(tok, docId, u) {
+  const buf = await downloadMedia(tok, u.token);
+  const created = await api(tok, 'POST', `/docx/v1/documents/${docId}/blocks/${docId}/children`, { children: [{ block_type: 23, file: {} }] });
+  let fileBlock = created.children.find((b) => b.block_type === 23);
+  if (!fileBlock) {
+    const view = created.children[0];
+    const innerId = view?.children?.[0];
+    if (!innerId) throw new Error(`附件块结构异常: ${JSON.stringify(created).slice(0, 200)}`);
+    fileBlock = { block_id: innerId };
+  }
+  try {
+    const fileToken = await uploadBytes(tok, 'docx_file', fileBlock.block_id, u.name, buf);
+    await api(tok, 'PATCH', `/docx/v1/documents/${docId}/blocks/batch_update`, { requests: [{ block_id: fileBlock.block_id, replace_file: { token: fileToken } }] });
+    const b = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${fileBlock.block_id}`);
+    if (!b.block?.file?.token) throw new Error('附件块重绑后 token 为空');
+  } catch (err) {
+    try { await api(tok, 'DELETE', `/docx/v1/documents/${docId}/blocks/${created.children[0].block_id}`); } catch { /* best-effort */ }
+    throw err;
+  }
+}
+
+// 把根级块快照成可重建单元（JSON 可序列化，媒体只存 token，追加时再下载重传）。
+// 不支持的块类型（callout/引用容器等，本发布器从不产出）直接报错，让调用方改走整篇重发。
+async function snapshotTrailing(tok, docId, blocks) {
+  const units = [];
+  let batch = [];
+  const flush = () => {
+    if (batch.length) { units.push({ kind: 'batch', blocks: batch }); batch = []; }
+  };
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.block_type === 31) {
+      flush();
+      const cellIds = b.children || [];
+      const cols = b.table?.property?.column_size || 1;
+      const cells = [];
+      for (const cid of cellIds) {
+        const cell = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${cid}`);
+        let txt = '';
+        for (const tid of cell.block.children || []) {
+          const tb = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${tid}`);
+          txt += (tb.block.text?.elements || []).map((e) => e.text_run?.content || '').join('');
+        }
+        cells.push(txt);
+      }
+      const rows = [];
+      for (let r = 0; r < cells.length / cols; r++) rows.push(cells.slice(r * cols, (r + 1) * cols));
+      units.push({ kind: 'table', rows });
+    } else if (b.block_type === 27) {
+      flush();
+      if (!b.image?.token) throw new Error(`第 ${i} 块图片无 token`);
+      units.push({ kind: 'image', token: b.image.token, name: `image-${units.length}.png` });
+    } else if (b.block_type === 23 || b.block_type === 33) {
+      flush();
+      const fileId = b.block_type === 23 ? b.block_id : (b.children || [])[0];
+      if (!fileId) throw new Error(`第 ${i} 块附件结构异常`);
+      const fb = await api(tok, 'GET', `/docx/v1/documents/${docId}/blocks/${fileId}`);
+      if (!fb.block?.file?.token) throw new Error(`第 ${i} 块附件无 token`);
+      units.push({ kind: 'file', token: fb.block.file.token, name: fb.block.file.name || `file-${units.length}` });
+    } else {
+      const key = BLOCK_KEY[b.block_type];
+      if (!key) throw new Error(`尾部第 ${i} 块类型 ${b.block_type} 不支持原地重建（手动编辑过的复杂块），请改用整篇重发`);
+      const body = b[key];
+      const rebuilt = { block_type: b.block_type, [key]: { elements: body?.elements || [] } };
+      if (body?.style) rebuilt[key].style = body.style;
+      batch.push(rebuilt);
+      if (batch.length >= BATCH) flush();
+    }
+  }
+  flush();
+  return units;
+}
+
+async function appendUnit(tok, docId, u) {
+  if (u.kind === 'batch') return publishBatch(tok, docId, u.blocks);
+  if (u.kind === 'table') return publishTable(tok, docId, u.rows);
+  if (u.kind === 'image') return rebuildImage(tok, docId, u);
+  return rebuildFile(tok, docId, u);
+}
+
+// md 只放替换后的该段内容（以锚点标题开头）。流程：定位锚点标题 → 快照尾部块 →
+// 删锚点起全部内容 → 依序追加 新段 + 重建尾部（带断点）。
+// （children 创建接口 ?index= 实测无效——一律追加末尾，2026-08-31 实证，故走全量重建。）
 const updateSection = opt('update-section');
 if (updateSection) {
   if (!opt('doc-id')) {
@@ -296,62 +425,72 @@ if (updateSection) {
     process.exit(1);
   }
 
-  let start;
+  let appendUnits;   // 依序追加的完整单元序列：新段 + 重建尾部
   let expectedTotal;
   if (uState) {
-    start = uState.start;
+    appendUnits = uState.append_units;
     expectedTotal = uState.expected_total;
-    console.error(`[publish] 断点续传：段落插入从第 ${uState.next}/${sectionUnits.length} 单元继续`);
+    if (!Array.isArray(appendUnits)) { console.error('断点状态损坏，加 --fresh 重来'); process.exit(1); }
+    console.error(`[publish] 断点续传：从第 ${uState.next}/${appendUnits.length} 单元继续`);
   } else {
     // 1) 定位锚点标题（文本完全匹配；列表接口不带文本时逐块 GET）
+    // heading 块的字段 key 是 heading1..heading9（block_type-2），没有通用 heading key。
+    const headingText = async (b) => {
+      const key = `heading${b.block_type - 2}`;
+      const els = b[key]?.elements || (await api(tok, 'GET', `/docx/v1/documents/${uDocId}/blocks/${b.block_id}`)).block?.[key]?.elements || [];
+      return els.map((e) => e.text_run?.content || '').join('').trim();
+    };
     const children = await fetchRootChildren(tok, uDocId);
     let anchor = -1;
     let level = 0;
     for (let i = 0; i < children.length; i++) {
       const b = children[i];
       if (b.block_type < 3 || b.block_type > 8) continue;
-      const els = b.heading?.elements || (await api(tok, 'GET', `/docx/v1/documents/${uDocId}/blocks/${b.block_id}`)).block?.heading?.elements || [];
-      const text = els.map((e) => e.text_run?.content || '').join('').trim();
+      const text = await headingText(b);
       if (text === updateSection.trim()) { anchor = i; level = b.block_type - 2; break; }
     }
     if (anchor < 0) {
       const heads = [];
       for (const b of children) {
         if (b.block_type >= 3 && b.block_type <= 8 && heads.length < 30) {
-          const els = b.heading?.elements || [];
+          const els = b[`heading${b.block_type - 2}`]?.elements || [];
           heads.push(els.map((e) => e.text_run?.content || '').join(''));
         }
       }
       console.error(`[publish] 找不到锚点标题「${updateSection}」。文档现有标题：\n  ${heads.filter(Boolean).join('\n  ') || '（无）'}`);
       process.exit(1);
     }
-    // 2) 段落范围 = 锚点到下一个同级/更高级标题前
-    let end = children.length;
+    // 2) 章节边界：锚点到下一个同级/更高级标题前；其后全是需要重建的尾部
+    let sectionEnd = children.length;
     for (let j = anchor + 1; j < children.length; j++) {
       const bt = children[j].block_type;
-      if (bt >= 3 && bt <= 8 && bt - 2 <= level) { end = j; break; }
+      if (bt >= 3 && bt <= 8 && bt - 2 <= level) { sectionEnd = j; break; }
     }
-    // 3) 删旧段（end 不含）
-    if (end > anchor) {
-      await api(tok, 'DELETE', `/docx/v1/documents/${uDocId}/blocks/${uDocId}/children/batch_delete`, { start_index: anchor, end_index: end });
+    // 3) 快照尾部块（章节结束处到文档末尾）——删之前把要保留的内容全部读出来
+    let tailUnits;
+    try {
+      tailUnits = await snapshotTrailing(tok, uDocId, children.slice(sectionEnd));
+    } catch (err) {
+      console.error(`[publish] 尾部快照失败：${err instanceof Error ? err.message : err}`);
+      console.error('[publish] 文档尾部含不支持原地重建的块（可能被手动编辑过），请把整篇最新内容重跑发布命令覆盖（不带 --update-section）。');
+      process.exit(1);
     }
-    start = anchor;
-    expectedTotal = children.length - (end - anchor) + sectionUnits.reduce((n, u) => n + unitBlocks(u), 0);
-    console.error(`[publish] 已删除旧段落（根级第 ${anchor}~${end} 块），原位插入 ${sectionUnits.length} 个新单元`);
-    uState = { mode: 'update', doc_id: uDocId, next: 0, start, expected_total: expectedTotal };
+    // 4) 删锚点起的全部内容（旧章节 + 其后所有块，追加时按序重建回来）
+    await api(tok, 'DELETE', `/docx/v1/documents/${uDocId}/blocks/${uDocId}/children/batch_delete`, { start_index: anchor, end_index: children.length });
+    // 5) 追加序列 = 新段 + 重建尾部
+    appendUnits = [...sectionUnits, ...tailUnits];
+    expectedTotal = anchor + sectionUnits.reduce((n, u) => n + unitBlocks(u), 0) + tailUnits.reduce((n, u) => n + unitBlocks(u), 0);
+    console.error(`[publish] 已删除旧段落（根级第 ${anchor} 块起共 ${children.length - anchor} 块），追加 ${sectionUnits.length} 个新单元 + 重建 ${tailUnits.length} 个尾部单元`);
+    uState = { mode: 'update', doc_id: uDocId, next: 0, expected_total: expectedTotal, append_units: appendUnits };
     writeFileSync(statePath, JSON.stringify(uState));
   }
 
-  // 4) 依序原位插入（带断点；表挂数会回滚自己，重跑重建）
-  let idx = start;
-  for (let n = uState.next; n < sectionUnits.length; n++) {
-    const u = sectionUnits[n];
-    await withNetRetry(() => (u.kind === 'batch'
-      ? publishBatch(tok, uDocId, u.blocks, idx)
-      : publishTable(tok, uDocId, u.rows, idx)));
-    idx += unitBlocks(u);
+  // 5) 依序追加（带断点；表/图片/附件挂数会回滚自己，重跑重建）
+  for (let n = uState.next; n < appendUnits.length; n++) {
+    const u = appendUnits[n];
+    await withNetRetry(() => appendUnit(tok, uDocId, u));
     writeFileSync(statePath, JSON.stringify({ ...uState, next: n + 1 }));
-    console.error(`[publish] 段落单元 ${n + 1}/${sectionUnits.length} 已插入`);
+    console.error(`[publish] 单元 ${n + 1}/${appendUnits.length} 已追加`);
   }
 
   const check = await verifyPublished(tok, uDocId, expectedTotal);
