@@ -22,6 +22,7 @@ ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 
 # Claude 执行代码与飞书交付所需的最小工具集。
 # file/xxd（文件类型与十六进制查看）、python3-pil（图片处理）是 agent 常用而被缺装的。
+# bookworm 起 xxd 从 vim-common 拆成独立包。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
@@ -29,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git jq \
     ripgrep \
     file \
-    vim-common \
+    xxd \
     python3 \
     python3-pil \
   && rm -rf /var/lib/apt/lists/*
