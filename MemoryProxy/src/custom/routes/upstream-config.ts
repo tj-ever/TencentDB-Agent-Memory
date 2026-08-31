@@ -47,7 +47,8 @@ function snapshot(config: ProxyConfig) {
       id: p.id,
       name: p.name,
       url: p.url,
-      apiKey: mask(p.apiKey),
+      // profiles 明文回显（表格编辑需要完整值）；GET 已提权 admin-only。
+      apiKey: p.apiKey,
       userAgent: p.userAgent ?? "",
       model: p.model ?? "",
       supportsImages: p.supportsImages === true,
@@ -167,7 +168,8 @@ export function agentMap(changes: AgentChange[], current: Record<string, AgentUp
 export function createUpstreamConfigHandlers(config: ProxyConfig) {
   return {
     get: async (c: Context): Promise<Response> => {
-      if (!(await authorized(c, config, false))) return c.json({ error: "unauthorized" }, 401);
+      // profiles 含明文 apiKey，仅 admin 可读（消费方 SettingsDialog / SystemConfigPage 均为 admin-only）。
+      if (!(await authorized(c, config, true))) return c.json({ error: "admin required" }, 403);
       return c.json(snapshot(config));
     },
     put: async (c: Context): Promise<Response> => {

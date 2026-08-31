@@ -381,7 +381,7 @@ export function SettingsDialog({
                       {
                         key: 'url',
                         header: t('systemConfig.proxy.url'),
-                        width: 340,
+                        width: 230,
                         render: (row) => (
                           <Input
                             size="s"
@@ -395,7 +395,7 @@ export function SettingsDialog({
                       {
                         key: 'apiKey',
                         header: t('systemConfig.proxy.apiKey'),
-                        width: 230,
+                        width: 340,
                         render: (row) => (
                           <Input
                             size="s"

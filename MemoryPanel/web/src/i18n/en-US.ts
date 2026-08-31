@@ -1388,7 +1388,7 @@ export const enUS = {
   'systemConfig.proxy.profile.add': 'Add upstream',
   'systemConfig.proxy.url': 'Provider URL',
   'systemConfig.proxy.apiKey': 'Token',
-  'systemConfig.proxy.apiKeyPlaceholder': 'Leave blank to keep current token',
+  'systemConfig.proxy.apiKeyPlaceholder': 'sk-…',
   'systemConfig.proxy.model': 'Model name',
   'systemConfig.proxy.save': 'Save & Apply',
   'systemConfig.proxy.saved': 'Applied and written to proxy config',

@@ -1350,7 +1350,7 @@ export const zhCN = {
   'systemConfig.proxy.profile.add': '添加上游',
   'systemConfig.proxy.url': '提供方地址',
   'systemConfig.proxy.apiKey': 'Token',
-  'systemConfig.proxy.apiKeyPlaceholder': '留空则保持原 Token',
+  'systemConfig.proxy.apiKeyPlaceholder': 'sk-…',
   'systemConfig.proxy.model': '模型名',
   'systemConfig.proxy.save': '保存并应用',
   'systemConfig.proxy.saved': '已应用并写入 proxy 配置',
