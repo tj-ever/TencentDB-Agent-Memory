@@ -371,6 +371,7 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
+                            style={{ width: '100%' }}
                             value={row.name}
                             placeholder={t('systemConfig.proxy.profile.namePlaceholder')}
                             onChange={(v) => patchRow(row.rowKey, { name: v })}
@@ -384,6 +385,7 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
+                            style={{ width: '100%' }}
                             value={row.url}
                             placeholder="https://…/v1"
                             onChange={(v) => patchRow(row.rowKey, { url: v })}
@@ -397,6 +399,7 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
+                            style={{ width: '100%' }}
                             value={row.apiKey}
                             placeholder={t('systemConfig.proxy.apiKeyPlaceholder')}
                             onChange={(v) => patchRow(row.rowKey, { apiKey: v })}
@@ -410,6 +413,7 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
+                            style={{ width: '100%' }}
                             value={row.model}
                             placeholder="ark-code-latest"
                             onChange={(v) => patchRow(row.rowKey, { model: v })}
@@ -423,6 +427,7 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
+                            style={{ width: '100%' }}
                             value={row.userAgent}
                             placeholder="claude-cli/1.0.128 (external, cli)"
                             onChange={(v) => patchRow(row.rowKey, { userAgent: v })}
