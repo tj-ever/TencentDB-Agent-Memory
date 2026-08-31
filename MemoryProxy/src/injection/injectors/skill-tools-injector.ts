@@ -94,7 +94,9 @@ export function renderSkillToolsBlock(
     "",
     `  <tool name="skill_files_read">`,
     `    path: ${bridge}/files/read`,
-    `    body: {"skill_id": "skl-xxx", "path": "scripts/run.sh", "encoding": "utf-8|base64"}`,
+    // ponytail: 编码枚举写成 "utf-8" 或 "base64" 而非 utf-8|base64 —— 部分中转的
+    // WAF（阿里云网关）按字面量拦 |base64（实测含该子串的 body 一律 405）。
+    `    body: {"skill_id": "skl-xxx", "path": "scripts/run.sh", "encoding": "utf-8 或 base64"}`,
     `    use:  读取单个资源文件内容。**必须先调 skill_view 拿 manifest**，从里面挑出 skill_id + path，本工具才能定位。默认返回 JSON 信封（含 base64/utf-8 编码的字节）。\n    若需下载到本地：在 curl 末尾加 -o <本地路径>，proxy 会返回原始字节直接写入文件，不进上下文。下载的脚本需 chmod +x 后再执行。`,
     `  </tool>`,
     "",
