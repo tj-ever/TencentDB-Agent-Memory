@@ -403,6 +403,23 @@ async function forwardWithRetry(
   // 任何一个 md5 变了都意味着 Anthropic 会 cache miss。
   //
   // 开启：PROXY_DEBUG_DUMP_OUTBOUND_MD5=1 node ...
+  if (process.env.PROXY_DEBUG_DUMP_BODY) {
+    // ── Optional full-body dump (dev only) ───────────────────────────────
+    // 与 handler.ts（openai 路径）对称：排上游 4xx 时抓出站请求现场。
+    try {
+      const fs = await import("node:fs");
+      const dir = process.env.PROXY_DEBUG_DUMP_BODY;
+      fs.mkdirSync(dir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const fn = `${dir}/${ts}-anthropic.json`;
+      fs.writeFileSync(fn, JSON.stringify({ url: target.url, headers: upstreamHeaders, body: upstreamBody }, null, 2));
+      // eslint-disable-next-line no-console
+      console.log(`[dump-body] wrote ${fn}`);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.log(`[dump-body] error: ${(e as Error).message}`);
+    }
+  }
   if (process.env.PROXY_DEBUG_DUMP_OUTBOUND_MD5) {
     try {
       const sys = (upstreamBody as { system?: unknown }).system;
