@@ -208,9 +208,14 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
               }];
           const applied = applyProfileChanges(body.profiles, currentProfiles);
           profiles = applied.profiles;
+          // 显式覆盖全部派生字段（含 undefined）：切换到的 profile 没配 UA/模型时，
+          // 不能残留上一条生效上游的值。
           const nextUpstream: ProxyConfig["upstream"] = {
             ...config.upstream,
             ...applied.upstreamPatch,
+            userAgent: applied.upstreamPatch.userAgent,
+            model: applied.upstreamPatch.model,
+            supportsImages: applied.upstreamPatch.supportsImages,
           };
           if (Array.isArray(body.agents)) nextUpstream.agents = agentMap(body.agents, config.upstream.agents);
           persist(config, nextUpstream, profiles);
