@@ -15,6 +15,7 @@ function route(entry: AgentUpstreamEntry | undefined, spaceInPath = "spc-path"):
 
 interface RawEntry {
   url?: string;
+  userAgent?: string;
   model?: string;
   binding?: { team_id?: string; agent_id?: string };
   memory?: { key?: string; spaceId?: string };
@@ -60,6 +61,32 @@ describe("parseUpstreamAgents", () => {
   it("memory 缺 key 时不产出 memory", () => {
     const entry = parseEntry({ url: "https://dev.example.com/v1", memory: { spaceId: "spc-x" } });
     expect(entry?.memory).toBeUndefined();
+  });
+});
+
+describe("userAgent 出站伪装", () => {
+  it("parseUpstreamAgents：agent 配置 userAgent 时透传", () => {
+    const entry = parseEntry({ url: "https://relay.example.com/v1", userAgent: "claude-cli/1.0.128 (external, cli)" });
+    expect(entry?.userAgent).toBe("claude-cli/1.0.128 (external, cli)");
+  });
+
+  it("parseUpstreamAgents：userAgent 空白时丢弃", () => {
+    const entry = parseEntry({ url: "https://relay.example.com/v1", userAgent: "  " });
+    expect(entry?.userAgent).toBeUndefined();
+  });
+
+  it("resolveUpstreamRoute：agent userAgent 优先于全局，未命中 agent 用全局", () => {
+    const cfg = {
+      upstream: {
+        url: "https://default.example.com/v1",
+        userAgent: "claude-cli/1.0.128 (external, cli)",
+        agents: { fw1: { url: "https://dev.example.com/v1", userAgent: "custom-agent/1.0" } },
+      },
+    } as unknown as ProxyConfig;
+    const hitAgent = resolveUpstreamRoute(cfg, "/fw1/spc-path");
+    expect(hitAgent.userAgent).toBe("custom-agent/1.0");
+    const globalRoute = resolveUpstreamRoute(cfg, "/v1/messages");
+    expect(globalRoute.userAgent).toBe("claude-cli/1.0.128 (external, cli)");
   });
 });
 

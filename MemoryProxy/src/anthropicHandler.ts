@@ -345,6 +345,11 @@ function buildUpstreamHeaders(
   }
   headers["content-type"] = "application/json";
 
+  // 上游指纹伪装：部分中转按 user-agent 白名单放行，配置后强制覆盖。
+  if (_config.upstream.userAgent) {
+    headers["user-agent"] = _config.upstream.userAgent;
+  }
+
   // `effectiveApiKey` is pre-resolved by the caller according to the
   // per-agent fallback rule (see the resolveEffectiveApiKey call site).
   //   - non-empty string → inject as server-side key, drop client's own
@@ -1378,6 +1383,10 @@ export async function handleAnthropicMessages(
   if (effectiveApiKey) {
     originalHeaders["x-api-key"] = effectiveApiKey;
     delete originalHeaders["authorization"];
+  }
+  // Retry 同样要过指纹白名单（retry 永远走默认上游）。
+  if (config.upstream.userAgent) {
+    originalHeaders["user-agent"] = config.upstream.userAgent;
   }
 
   const retryBody = sanitizeThinkingBlocks(body).body;

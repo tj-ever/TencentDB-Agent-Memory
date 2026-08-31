@@ -13,9 +13,14 @@ export interface UpstreamRoute {
   agentName?: string;
   agentSource: string;
   spaceId: string;
-  /** 命中 agent 时返回的 upstream 配置（url/model/binding）。 */
+  /** 命中 agent 时返回的 upstream 配置（url/userAgent/model/binding）。 */
   entry?: AgentUpstreamEntry;
   url: string;
+  /**
+   * 出站 User-Agent 伪装：命中 agent 用 agent 配置，否则用全局 upstream.userAgent。
+   * 部分中转上游按客户端指纹白名单放行，配置后转发时强制覆盖请求头。
+   */
+  userAgent?: string;
   /**
    * 上游认证 Key。语义简化（v4.3+）：仅对非 agent 的默认路由使用全局
    * upstream.apiKey；命中 agent 配置时始终为 ""（透传客户端的原始 Key）。
@@ -40,6 +45,7 @@ export function resolveUpstreamRoute(config: ProxyConfig, path: string): Upstrea
     spaceId: hasSpace ? parts[1] ?? "" : "",
     entry,
     url: entry?.url ?? config.upstream.url,
+    userAgent: entry?.userAgent ?? config.upstream.userAgent,
     // v4.3+ 简化：命中 agent 配置时一律透传客户端 Key（不配置/替换任何 agent 级 Key），
     // 未命中时沿用全局 upstream.apiKey 兜底。
     apiKey: entry ? "" : config.upstream.apiKey,
@@ -61,6 +67,7 @@ export function parseUpstreamAgents(
     const memSpace = entry.memory?.spaceId?.trim();
     agents[name] = {
       url: entry.url.trim(),
+      ...(entry.userAgent?.trim() ? { userAgent: entry.userAgent.trim() } : {}),
       ...(entry.model?.trim() ? { model: entry.model.trim() } : {}),
       ...(teamId && agentId ? { binding: { team_id: teamId, agent_id: agentId, ...(taskId ? { task_id: taskId } : {}) } } : {}),
       ...(memKey ? { memory: { key: memKey, ...(memSpace ? { spaceId: memSpace } : {}) } } : {}),

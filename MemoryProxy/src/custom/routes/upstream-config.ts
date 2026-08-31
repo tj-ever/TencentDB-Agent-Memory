@@ -10,6 +10,7 @@ interface AgentChange {
   name: string;
   originalName?: string;
   url: string;
+  userAgent?: string;
   model?: string;
   binding?: { team_id?: string; agent_id?: string; task_id?: string };
   memory?: { key?: string; spaceId?: string };
@@ -27,11 +28,13 @@ function snapshot(config: ProxyConfig) {
   return {
     url: config.upstream.url,
     apiKey: mask(config.upstream.apiKey),
+    userAgent: config.upstream.userAgent ?? "",
     model: config.upstream.model ?? "",
     supportsImages: config.upstream.supportsImages === true,
     agents: Object.entries(config.upstream.agents).map(([name, entry]) => ({
       name,
       url: entry.url,
+      userAgent: entry.userAgent ?? "",
       model: entry.model ?? "",
       binding: entry.binding,
       // memory.key 出站回显仅给掩码，避免泄露明文凭据；spaceId 可明文。
@@ -77,6 +80,7 @@ export function agentMap(changes: AgentChange[], current: Record<string, AgentUp
     const effectiveSpace = memSpace || prev?.memory?.spaceId;
     result[name] = {
       url,
+      ...(change.userAgent?.trim() ? { userAgent: change.userAgent.trim() } : {}),
       ...(change.model?.trim() ? { model: change.model.trim() } : {}),
       ...(teamId && agentId ? { binding: { team_id: teamId, agent_id: agentId, ...(taskId ? { task_id: taskId } : {}) } } : {}),
       ...(effectiveKey
@@ -102,6 +106,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
       const body = await c.req.json<{
         url?: unknown;
         apiKey?: unknown;
+        userAgent?: unknown;
         model?: unknown;
         supportsImages?: unknown;
         agents?: AgentChange[];
@@ -114,6 +119,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         const next: ProxyConfig["upstream"] = {
           ...config.upstream,
           url: body.url.trim(),
+          ...(typeof body.userAgent === "string" ? { userAgent: body.userAgent.trim() || undefined } : {}),
           ...(typeof body.model === "string" ? { model: body.model.trim() || undefined } : {}),
           ...(typeof body.supportsImages === "boolean" ? { supportsImages: body.supportsImages } : {}),
         };

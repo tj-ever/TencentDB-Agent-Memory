@@ -402,6 +402,11 @@ export interface SkillRuntimeConfig {
 export interface AgentUpstreamEntry {
   /** Target upstream base URL. Required. */
   url: string;
+  /**
+   * 出站 User-Agent 伪装。部分中转上游按客户端指纹白名单放行（如仅接受
+   * claude-cli 的 UA），配置后转发时强制覆盖请求的 user-agent 头。
+   */
+  userAgent?: string;
   /** 该 agent 的默认模型（覆盖全局 upstream.model；空则用全局）。 */
   model?: string;
   /**
@@ -445,6 +450,11 @@ export interface ProxyConfig {
   upstream: {
     url: string; // OpenAI-compatible upstream URL
     apiKey: string; // 全局 Key：仅未命中 agent 配置的默认路由使用；命中 agent 时一律透传客户端 Key
+    /**
+     * 全局出站 User-Agent 伪装（同 AgentUpstreamEntry.userAgent，作用于
+     * 未命中 agent 配置的默认路由）。部分中转上游按客户端指纹白名单放行。
+     */
+    userAgent?: string;
     /** 提供方默认模型名；配置后覆盖客户端请求模型。 */
     model?: string;
     /** 模型是否支持识图。false（默认，文本模型）→ 转发前剥掉会话里的 image 内容块，避免 text-only 模型 400。 */
@@ -757,10 +767,11 @@ export interface RawYamlConfig {
   upstream?: {
     url?: string;
     apiKey?: string;
+    userAgent?: string;
     model?: string;
     supportsImages?: boolean;
     /** Per-agent override map. See `AgentUpstreamEntry`. */
-    agents?: Record<string, { url?: string; apiKey?: string; model?: string; binding?: { team_id?: string; agent_id?: string; task_id?: string }; memory?: { key?: string; spaceId?: string } } | null | undefined>;
+    agents?: Record<string, { url?: string; apiKey?: string; userAgent?: string; model?: string; binding?: { team_id?: string; agent_id?: string; task_id?: string }; memory?: { key?: string; spaceId?: string } } | null | undefined>;
   };
   log?: {
     file?: string;

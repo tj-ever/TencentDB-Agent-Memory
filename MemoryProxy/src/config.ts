@@ -270,6 +270,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         yaml.upstream?.url ??
         DEFAULT_CONFIG.upstream.url,
       apiKey: yaml.upstream?.apiKey ?? DEFAULT_CONFIG.upstream.apiKey,
+      userAgent: typeof yaml.upstream?.userAgent === "string" && yaml.upstream.userAgent.trim() ? yaml.upstream.userAgent.trim() : undefined,
       model: typeof yaml.upstream?.model === "string" ? yaml.upstream.model : undefined,
       supportsImages: yaml.upstream?.supportsImages === true,
       agents: parseUpstreamAgents(yaml.upstream?.agents),

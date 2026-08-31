@@ -272,6 +272,11 @@ function buildUpstreamHeaders(
   }
   headers["content-type"] = "application/json";
 
+  // 上游指纹伪装：部分中转按 user-agent 白名单放行，配置后强制覆盖。
+  if (_config.upstream.userAgent) {
+    headers["user-agent"] = _config.upstream.userAgent;
+  }
+
   // `effectiveApiKey` is pre-resolved by the caller — see the resolveEffective
   // block near the call site. Non-empty → inject as server-side Bearer;
   // empty/undefined → passthrough (client's own Authorization survives).
@@ -1433,6 +1438,10 @@ export async function handleChatCompletions(
   // on the client's own key, preserving the passthrough intent.
   if (effectiveApiKey) {
     originalHeaders["authorization"] = `Bearer ${effectiveApiKey}`;
+  }
+  // Retry 同样要过指纹白名单（retry 永远走默认上游）。
+  if (config.upstream.userAgent) {
+    originalHeaders["user-agent"] = config.upstream.userAgent;
   }
 
   // Inject stream_options.include_usage for OpenAI compat
