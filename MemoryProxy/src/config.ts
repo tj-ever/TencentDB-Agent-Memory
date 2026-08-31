@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
-import type { CostGuardConfig, ProxyConfig, RawYamlConfig } from "./types.js";
+import type { CostGuardConfig, ProxyConfig, RawYamlConfig, UpstreamProfile } from "./types.js";
 import { parseUpstreamAgents } from "./custom/upstream.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   configPath: "config.yaml",
   overridePath: "",
   server: { host: "0.0.0.0", port: 8096, forwardTimeoutMs: 600_000 },
+  upstreamProfiles: [],
   upstream: { url: DEFAULT_UPSTREAM, apiKey: "", agents: {} },
   log: {
     file: "",
@@ -238,6 +239,27 @@ function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
   return result;
 }
 
+/** YAML 的 upstreamProfiles 原始条目收敛为运行时形态（缺字段/无 url 的行丢弃）。 */
+function parseUpstreamProfiles(
+  raw: RawYamlConfig["upstreamProfiles"],
+): UpstreamProfile[] {
+  const out: UpstreamProfile[] = [];
+  for (const p of raw ?? []) {
+    if (!p?.url?.trim()) continue;
+    out.push({
+      id: p.id?.trim() || `up-${out.length + 1}`,
+      name: p.name?.trim() || p.url.trim(),
+      url: p.url.trim(),
+      apiKey: p.apiKey ?? "",
+      ...(p.userAgent?.trim() ? { userAgent: p.userAgent.trim() } : {}),
+      ...(p.model?.trim() ? { model: p.model.trim() } : {}),
+      ...(p.supportsImages === true ? { supportsImages: true } : {}),
+      enabled: p.enabled === true,
+    });
+  }
+  return out;
+}
+
 /**
  * Build the final ProxyConfig.
  * Priority (high → low): CLI overrides > runtime upstream override > YAML config file > defaults.
@@ -264,6 +286,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         yaml.server?.forwardTimeoutMs ??
         DEFAULT_CONFIG.server.forwardTimeoutMs,
     },
+    upstreamProfiles: parseUpstreamProfiles(yaml.upstreamProfiles),
     upstream: {
       url:
         overrides.upstreamUrl ??

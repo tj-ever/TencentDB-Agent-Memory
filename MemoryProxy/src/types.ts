@@ -435,6 +435,22 @@ export interface AgentUpstreamEntry {
   _?: never;
 }
 
+/**
+ * 可切换的全局上游 profile（面板「Proxy 上游」表格的行）。
+ * `upstream` 始终等于 enabled 的那条 profile —— profiles 只是存储形态，
+ * 转发逻辑只看 `upstream`，不为 profile 增加任何运行时分支。
+ */
+export interface UpstreamProfile {
+  id: string;
+  name: string;
+  url: string;
+  apiKey: string;
+  userAgent?: string;
+  model?: string;
+  supportsImages?: boolean;
+  enabled: boolean;
+}
+
 /** Top-level proxy configuration (merged from config file + CLI args). */
 export interface ProxyConfig {
   /** 本实例加载的 YAML 配置路径（运行时上游配置写回此文件持久化）。 */
@@ -447,6 +463,8 @@ export interface ProxyConfig {
     /** Upstream forward timeout in ms. 0 = no timeout. Default: 600_000 (10 min). */
     forwardTimeoutMs?: number;
   };
+  /** 多上游 profile 列表（面板表格编辑；enabled 那条即生效 upstream）。可为空。 */
+  upstreamProfiles: UpstreamProfile[];
   upstream: {
     url: string; // OpenAI-compatible upstream URL
     apiKey: string; // 全局 Key：仅未命中 agent 配置的默认路由使用；命中 agent 时一律透传客户端 Key
@@ -773,6 +791,17 @@ export interface RawYamlConfig {
     /** Per-agent override map. See `AgentUpstreamEntry`. */
     agents?: Record<string, { url?: string; apiKey?: string; userAgent?: string; model?: string; binding?: { team_id?: string; agent_id?: string; task_id?: string }; memory?: { key?: string; spaceId?: string } } | null | undefined>;
   };
+  /** 可切换的全局上游 profile 列表。See `UpstreamProfile`. */
+  upstreamProfiles?: Array<{
+    id?: string;
+    name?: string;
+    url?: string;
+    apiKey?: string;
+    userAgent?: string;
+    model?: string;
+    supportsImages?: boolean;
+    enabled?: boolean;
+  }>;
   log?: {
     file?: string;
     verbose?: boolean;

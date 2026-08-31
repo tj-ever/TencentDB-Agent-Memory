@@ -119,3 +119,49 @@ describe("agentMap（改名保留语义）", () => {
     expect(out.same?.memory?.key).toBe("sk-mem-real");
   });
 });
+
+describe("applyProfileChanges（多上游 profile 切换）", () => {
+  const current = [
+    { id: "up-1", name: "中转A", url: "https://a.example.com/v1", apiKey: "sk-a-real", userAgent: "claude-cli/1.0.128 (external, cli)", model: "m-a", enabled: true },
+    { id: "up-2", name: "中转B", url: "https://b.example.com/v1", apiKey: "sk-b-real", model: "m-b", enabled: false },
+  ];
+
+  it("切换 enabled：生效 upstream 随之切换，掩码 key 保留明文", async () => {
+    const { applyProfileChanges } = await import("../routes/upstream-config.js");
+    const { profiles, upstreamPatch } = applyProfileChanges([
+      { id: "up-1", name: "中转A", url: "https://a.example.com/v1", apiKey: "sk-a …", userAgent: "claude-cli/1.0.128 (external, cli)", model: "m-a", enabled: false },
+      { id: "up-2", name: "中转B", url: "https://b.example.com/v1", apiKey: "sk-b …", model: "m-b", enabled: true },
+    ], current);
+    expect(profiles[0]?.apiKey).toBe("sk-a-real");
+    expect(profiles[1]?.apiKey).toBe("sk-b-real");
+    expect(upstreamPatch.url).toBe("https://b.example.com/v1");
+    expect(upstreamPatch.apiKey).toBe("sk-b-real");
+    expect(upstreamPatch.model).toBe("m-b");
+    expect(upstreamPatch.userAgent).toBeUndefined();
+  });
+
+  it("明文 key 覆盖旧值", async () => {
+    const { applyProfileChanges } = await import("../routes/upstream-config.js");
+    const { profiles } = applyProfileChanges([
+      { id: "up-1", name: "中转A", url: "https://a.example.com/v1", apiKey: "sk-new", enabled: true },
+    ], current);
+    expect(profiles[0]?.apiKey).toBe("sk-new");
+  });
+
+  it("0 条或多条 enabled 都拒绝", async () => {
+    const { applyProfileChanges } = await import("../routes/upstream-config.js");
+    expect(() => applyProfileChanges([
+      { id: "up-1", url: "https://a.example.com/v1", enabled: false },
+      { id: "up-2", url: "https://b.example.com/v1", enabled: false },
+    ], current)).toThrow(/exactly one profile/);
+    expect(() => applyProfileChanges([
+      { id: "up-1", url: "https://a.example.com/v1", enabled: true },
+      { id: "up-2", url: "https://b.example.com/v1", enabled: true },
+    ], current)).toThrow(/exactly one profile/);
+  });
+
+  it("缺 url 的行拒绝", async () => {
+    const { applyProfileChanges } = await import("../routes/upstream-config.js");
+    expect(() => applyProfileChanges([{ id: "up-1", url: "  ", enabled: true }], current)).toThrow(/invalid profile url/);
+  });
+});
