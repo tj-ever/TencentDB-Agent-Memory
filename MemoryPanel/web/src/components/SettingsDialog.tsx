@@ -329,7 +329,7 @@ export function SettingsDialog({
   );
 
   return (
-    <Modal visible caption={t('settings.caption')} size={isAdmin ? 'l' : 'm'} onClose={onClose}>
+    <Modal visible caption={t('settings.caption')} size={isAdmin ? 'xl' : 'm'} onClose={onClose}>
       <Modal.Body>
         {isAdmin ? (
           <Tabs
@@ -394,7 +394,6 @@ export function SettingsDialog({
                         render: (row) => (
                           <Input
                             size="s"
-                            type="password"
                             value={row.apiKey}
                             placeholder={t('systemConfig.proxy.apiKeyPlaceholder')}
                             onChange={(v) => patchRow(row.rowKey, { apiKey: v })}
