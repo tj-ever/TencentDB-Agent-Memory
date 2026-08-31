@@ -4,8 +4,9 @@
  * Tab 结构：
  *   - 「权限管理」：控制资源管理模块的开关（Wiki / Code / Skill / Chat_Memory），
  *     防止未稳定使用的模块被注入内核运行。
- *   - 「Proxy 上游」（仅 admin 可见）：配置面向所有 LLM 消费方的全局上游
- *     （URL/Token/模型/识图），由 memory-hub 面板经 /api/v1/proxy-config 读写。
+ *   - 「Proxy 上游」（仅 admin 可见）：多上游 profile 表格，启用开关单选控制
+ *     当前生效上游（enabled 那条派生为全局 upstream），由 memory-hub 面板经
+ *     /api/v1/proxy-config 读写。
  *
  * 后续可在 TABS 数组里追加其他 Tab（如通知、偏好设置等）。
  *
@@ -15,9 +16,9 @@ import { useTranslation } from 'react-i18next';
 import {
   Alert,
   Button,
-  Form,
   Input,
   Switch,
+  Table,
   TabPanel,
   Tabs,
   Text,
@@ -29,9 +30,11 @@ import {
   CodeIcon,
   ToolsIcon,
   ChatIcon,
+  AddIcon,
+  DeleteIcon,
 } from 'tea-icons-react';
 import { userConfigApi, type AssetCapabilityKey } from '@/lib/teamApi';
-import { proxyConfigApi } from '@/custom/api/proxy-config';
+import { proxyConfigApi, type ProxyProfile } from '@/custom/api/proxy-config';
 import { type TeamRole } from '@/services/useCurrentRole';
 import { tea } from '@/lib/tea-bridge';
 
@@ -142,10 +145,38 @@ export function SettingsDialog({
     }
   }
 
-  // ===== Proxy 上游 Tab 状态 =====
-  const [proxyForm, setProxyForm] = useState({ url: '', apiKey: '', model: '', supportsImages: false });
+  // ===== Proxy 上游 Tab 状态（多 profile 表格） =====
+  interface EditableProfile extends ProxyProfile {
+    /** 前端行 key；id 仅在行来自服务端时有值。 */
+    rowKey: string;
+  }
+
+  const [profiles, setProfiles] = useState<EditableProfile[]>([]);
+  const [rowSeq, setRowSeq] = useState(0);
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxySaving, setProxySaving] = useState(false);
+
+  function toEditable(list: ProxyProfile[]): EditableProfile[] {
+    return list.map((p, i) => ({ ...p, rowKey: p.id || `row-${i}` }));
+  }
+
+  function fromSnapshot(cur: Awaited<ReturnType<typeof proxyConfigApi.get>>): EditableProfile[] {
+    // 首次迁移：服务端还没有 profiles，用当前生效 upstream 播种一行（掩码 key 保留在服务端）。
+    if (!cur.profiles.length) {
+      return [{
+        id: 'up-1',
+        name: '',
+        url: cur.url,
+        apiKey: cur.apiKey,
+        userAgent: cur.userAgent,
+        model: cur.model,
+        supportsImages: cur.supportsImages,
+        enabled: true,
+        rowKey: 'up-1',
+      }];
+    }
+    return toEditable(cur.profiles);
+  }
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -154,7 +185,7 @@ export function SettingsDialog({
     proxyConfigApi.get()
       .then((cur) => {
         if (cancelled) return;
-        setProxyForm({ url: cur.url, apiKey: '', model: cur.model, supportsImages: cur.supportsImages });
+        setProfiles(fromSnapshot(cur));
       })
       .catch((err) => {
         if (!cancelled && !(err instanceof Error && String(err.message).includes('PROXY_UNAVAILABLE'))) {
@@ -165,20 +196,58 @@ export function SettingsDialog({
     return () => { cancelled = true; };
   }, [isAdmin]);
 
+  function patchRow(rowKey: string, patch: Partial<EditableProfile>) {
+    setProfiles((rows) => rows.map((r) => (r.rowKey === rowKey ? { ...r, ...patch } : r)));
+  }
+
+  /** 单选语义：开启某行 = 其余全部关闭；关闭唯一启用行不生效（删行即可）。 */
+  function toggleEnabled(rowKey: string, v: boolean) {
+    setProfiles((rows) => (v
+      ? rows.map((r) => ({ ...r, enabled: r.rowKey === rowKey }))
+      : rows));
+  }
+
+  function addRow() {
+    const rowKey = `row-new-${rowSeq}`;
+    setRowSeq((n) => n + 1);
+    setProfiles((rows) => [...rows, {
+      id: '',
+      name: '',
+      url: '',
+      apiKey: '',
+      userAgent: '',
+      model: '',
+      supportsImages: false,
+      enabled: false,
+      rowKey,
+    }]);
+  }
+
+  function removeRow(rowKey: string) {
+    setProfiles((rows) => {
+      const next = rows.filter((r) => r.rowKey !== rowKey);
+      // 删掉的是启用行时自动启用剩余第一行，避免 0 条 enabled。
+      if (rows.find((r) => r.rowKey === rowKey)?.enabled && next.length) {
+        return next.map((r, i) => ({ ...r, enabled: i === 0 }));
+      }
+      return next;
+    });
+  }
+
   async function saveProxy() {
-    if (!proxyForm.url.trim()) {
+    const rows = profiles.map(({ rowKey: _rowKey, ...p }) => p);
+    if (rows.some((p) => !p.url.trim())) {
       tea.notify.warning(t('systemConfig.proxy.urlRequired'));
+      return;
+    }
+    if (rows.filter((p) => p.enabled).length !== 1) {
+      tea.notify.warning(t('systemConfig.proxy.exactlyOne'));
       return;
     }
     setProxySaving(true);
     try {
-      const cur = await proxyConfigApi.update({
-        url: proxyForm.url.trim(),
-        apiKey: proxyForm.apiKey.trim() || undefined,
-        model: proxyForm.model.trim(),
-        supportsImages: proxyForm.supportsImages,
-      });
-      setProxyForm({ url: cur.url, apiKey: '', model: cur.model, supportsImages: cur.supportsImages });
+      const cur = await proxyConfigApi.update({ url: rows.find((p) => p.enabled)!.url.trim(), profiles: rows });
+      setProfiles(toEditable(cur.profiles));
       tea.notify.success(t('systemConfig.proxy.saved'));
     } catch (err) {
       tea.notify.error(err);
@@ -260,7 +329,7 @@ export function SettingsDialog({
   );
 
   return (
-    <Modal visible caption={t('settings.caption')} size="m" onClose={onClose}>
+    <Modal visible caption={t('settings.caption')} size={isAdmin ? 'l' : 'm'} onClose={onClose}>
       <Modal.Body>
         {isAdmin ? (
           <Tabs
@@ -277,23 +346,119 @@ export function SettingsDialog({
                   <Text theme="weak" parent="p" style={{ fontSize: 12, margin: '4px 0 12px' }}>
                     {t('systemConfig.proxy.hint')}
                   </Text>
-                  <div className="_memory-proxy-form" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                    <Form.Item label={t('systemConfig.proxy.url')} style={{ minWidth: 320, flex: '1 1 320px', marginBottom: 0 }}>
-                      <Input value={proxyForm.url} placeholder="https://…/v1" onChange={(v) => setProxyForm((f) => ({ ...f, url: v }))} />
-                    </Form.Item>
-                    <Form.Item label={t('systemConfig.proxy.apiKey')} style={{ minWidth: 260, flex: '1 1 260px', marginBottom: 0 }}>
-                      <Input type="password" placeholder={t('systemConfig.proxy.apiKeyPlaceholder')} value={proxyForm.apiKey}
-                        onChange={(v) => setProxyForm((f) => ({ ...f, apiKey: v }))} />
-                    </Form.Item>
-                    <Form.Item label={t('systemConfig.proxy.model')} style={{ minWidth: 220, flex: '1 1 220px', marginBottom: 0 }}>
-                      <Input value={proxyForm.model} placeholder="ark-code-latest" onChange={(v) => setProxyForm((f) => ({ ...f, model: v }))} />
-                    </Form.Item>
-                  </div>
+                  <Table
+                    verticalTop
+                    records={profiles}
+                    recordKey="rowKey"
+                    columns={[
+                      {
+                        key: 'enabled',
+                        header: t('systemConfig.proxy.profile.enabled'),
+                        width: 70,
+                        render: (row) => (
+                          <Switch
+                            value={row.enabled}
+                            onChange={(v) => toggleEnabled(row.rowKey, v)}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'name',
+                        header: t('systemConfig.proxy.profile.name'),
+                        width: 110,
+                        render: (row) => (
+                          <Input
+                            size="s"
+                            value={row.name}
+                            placeholder={t('systemConfig.proxy.profile.namePlaceholder')}
+                            onChange={(v) => patchRow(row.rowKey, { name: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'url',
+                        header: t('systemConfig.proxy.url'),
+                        render: (row) => (
+                          <Input
+                            size="s"
+                            value={row.url}
+                            placeholder="https://…/v1"
+                            onChange={(v) => patchRow(row.rowKey, { url: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'apiKey',
+                        header: t('systemConfig.proxy.apiKey'),
+                        width: 150,
+                        render: (row) => (
+                          <Input
+                            size="s"
+                            type="password"
+                            value={row.apiKey}
+                            placeholder={t('systemConfig.proxy.apiKeyPlaceholder')}
+                            onChange={(v) => patchRow(row.rowKey, { apiKey: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'model',
+                        header: t('systemConfig.proxy.model'),
+                        width: 130,
+                        render: (row) => (
+                          <Input
+                            size="s"
+                            value={row.model}
+                            placeholder="ark-code-latest"
+                            onChange={(v) => patchRow(row.rowKey, { model: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'userAgent',
+                        header: t('systemConfig.proxy.profile.userAgent'),
+                        width: 150,
+                        render: (row) => (
+                          <Input
+                            size="s"
+                            value={row.userAgent}
+                            placeholder="claude-cli/1.0.128 (external, cli)"
+                            onChange={(v) => patchRow(row.rowKey, { userAgent: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'supportsImages',
+                        header: t('systemConfig.proxy.supportsImages'),
+                        width: 70,
+                        render: (row) => (
+                          <Switch
+                            value={row.supportsImages}
+                            onChange={(v) => patchRow(row.rowKey, { supportsImages: v })}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'op',
+                        header: t('systemConfig.proxy.profile.op'),
+                        width: 60,
+                        render: (row) => (
+                          <Button
+                            type="icon"
+                            title={t('systemConfig.proxy.profile.delete')}
+                            onClick={() => removeRow(row.rowKey)}
+                          >
+                            <DeleteIcon size={14} />
+                          </Button>
+                        ),
+                      },
+                    ]}
+                  />
                   <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                      <Switch value={proxyForm.supportsImages} onChange={(v) => setProxyForm((f) => ({ ...f, supportsImages: v }))} />
-                      <span>{t('systemConfig.proxy.supportsImages')}</span>
-                    </label>
+                    <Button onClick={addRow}>
+                      <AddIcon size={14} />
+                      {t('systemConfig.proxy.profile.add')}
+                    </Button>
                     <Text theme="weak" parent="span" style={{ fontSize: 12 }}>{t('systemConfig.proxy.supportsImagesHint')}</Text>
                     <div style={{ flex: 1 }} />
                     <Button type="primary" loading={proxySaving} onClick={() => void saveProxy()}>

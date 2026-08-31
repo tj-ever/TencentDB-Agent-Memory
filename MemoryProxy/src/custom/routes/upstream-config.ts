@@ -193,7 +193,20 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         // profiles 路径：面板表格全量提交，enabled 那条派生为生效 upstream。
         let profiles: UpstreamProfile[] | null = null;
         if (Array.isArray(body.profiles)) {
-          const applied = applyProfileChanges(body.profiles, config.upstreamProfiles);
+          // 首次从单上游迁移到表格：磁盘还没有 profiles，掩码 key 的保留源是当前生效 upstream。
+          const currentProfiles = config.upstreamProfiles.length
+            ? config.upstreamProfiles
+            : [{
+                id: "up-1",
+                name: config.upstream.url,
+                url: config.upstream.url,
+                apiKey: config.upstream.apiKey,
+                ...(config.upstream.userAgent ? { userAgent: config.upstream.userAgent } : {}),
+                ...(config.upstream.model ? { model: config.upstream.model } : {}),
+                ...(config.upstream.supportsImages ? { supportsImages: true } : {}),
+                enabled: true,
+              }];
+          const applied = applyProfileChanges(body.profiles, currentProfiles);
           profiles = applied.profiles;
           const nextUpstream: ProxyConfig["upstream"] = {
             ...config.upstream,
