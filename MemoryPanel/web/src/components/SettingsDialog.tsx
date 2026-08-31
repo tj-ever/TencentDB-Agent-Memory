@@ -346,6 +346,8 @@ export function SettingsDialog({
                   <Text theme="weak" parent="p" style={{ fontSize: 12, margin: '4px 0 12px' }}>
                     {t('systemConfig.proxy.hint')}
                   </Text>
+                  {/* 列内容长（URL/Token/UA），表比弹窗宽时横向滚动而不是截断。 */}
+                  <div style={{ overflowX: 'auto' }}>
                   <Table
                     verticalTop
                     records={profiles}
@@ -365,7 +367,7 @@ export function SettingsDialog({
                       {
                         key: 'name',
                         header: t('systemConfig.proxy.profile.name'),
-                        width: 110,
+                        width: 140,
                         render: (row) => (
                           <Input
                             size="s"
@@ -378,6 +380,7 @@ export function SettingsDialog({
                       {
                         key: 'url',
                         header: t('systemConfig.proxy.url'),
+                        width: 340,
                         render: (row) => (
                           <Input
                             size="s"
@@ -390,7 +393,7 @@ export function SettingsDialog({
                       {
                         key: 'apiKey',
                         header: t('systemConfig.proxy.apiKey'),
-                        width: 150,
+                        width: 230,
                         render: (row) => (
                           <Input
                             size="s"
@@ -403,7 +406,7 @@ export function SettingsDialog({
                       {
                         key: 'model',
                         header: t('systemConfig.proxy.model'),
-                        width: 130,
+                        width: 160,
                         render: (row) => (
                           <Input
                             size="s"
@@ -416,7 +419,7 @@ export function SettingsDialog({
                       {
                         key: 'userAgent',
                         header: t('systemConfig.proxy.profile.userAgent'),
-                        width: 150,
+                        width: 220,
                         render: (row) => (
                           <Input
                             size="s"
@@ -453,6 +456,7 @@ export function SettingsDialog({
                       },
                     ]}
                   />
+                  </div>
                   <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                     <Button onClick={addRow}>
                       <AddIcon size={14} />
