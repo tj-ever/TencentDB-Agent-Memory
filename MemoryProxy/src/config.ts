@@ -274,6 +274,11 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     if (ov.upstream) {
       yaml = { ...yaml, upstream: { ...(yaml.upstream ?? {}), ...ov.upstream } };
     }
+    // profiles 只存在 override 里（面板写入），必须一并合并，否则重启后丢失
+    // 掩码 key 的保留源，下次保存会把 key 清空。
+    if (ov.upstreamProfiles) {
+      yaml = { ...yaml, upstreamProfiles: ov.upstreamProfiles };
+    }
   }
 
   return {
