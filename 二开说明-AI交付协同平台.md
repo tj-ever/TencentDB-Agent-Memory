@@ -2,6 +2,8 @@
 
 本文描述当前工作区中 MemoryBridge、MemoryPanel 和 MemoryProxy 的飞书机器人及自定义上游能力。
 
+新建飞书机器人的权限基线与开通/注册步骤见 [飞书机器人开通清单.md](飞书机器人开通清单.md)。
+
 ## 系统定位
 
 MemoryBridge 是飞书长连接运行服务。它从面板读取机器人配置，接收私聊或群聊消息，调用本机 `claude -p`，再通过 MemoryProxy 访问大模型和腾讯 Mem。
@@ -54,7 +56,7 @@ MemoryPanel:8125 -> MemoryCore（面板自身业务）
 | `feishu.app_id` / `app_secret` | 飞书应用凭据 |
 | `feishu.policy` | `requireMention`、`dmMode`、可选私聊白名单 |
 | `session_mode` | `none`、`user` 或 `chat` |
-| `system_prompt` | 机器人专用 system prompt；为空时使用 `config/zhuoyu.system.md` 通用规则 |
+| `system_prompt` | 项目业务增量，叠加在通用基线（交付/原型/质量规则）之后合并注入，可留空；留空即只有通用基线 |
 
 Bridge 的运行数据包括：
 
@@ -197,7 +199,7 @@ cp .env.example .env
 
 | 目录 | 内容 |
 | --- | --- |
-| `MemoryBridge/` | 整个子项目（含 `config/zhuoyu.system.md` 业务提示词） |
+| `MemoryBridge/` | 整个子项目（通用交付/原型/质量基线在 `src/claudeRunner.ts` 的 `defaultRules()`） |
 | `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`、`trustedPreset()`）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
 | `MemoryPanel/src/panel/custom/` | 面板反代 Bridge 的 channels 路由、Proxy 上游配置路由、统一注册点 index.ts |
 | `MemoryPanel/web/src/custom/` | 前端机器人管理 API、会话管理组件、系统配置页 |

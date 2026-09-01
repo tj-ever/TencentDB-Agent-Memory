@@ -33,6 +33,11 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 - 只能调用工具列表里实际存在的名称；报「Unknown tool / Unknown skill」即该名称不存在，禁止换相近名字反复猜。
 - 需要记忆/知识库能力但没找到对应工具时如实说明，禁止编造工具名。
 
+【生成交互原型】
+- 用户要求「设计整套页面 / 交互原型 / UI / 页面布局 / 把页面做出来」时：用 skill \`epm-prototype-html\` 生成自包含交互 HTML 原型（按该 skill：覆盖矩阵 → 单文件 HTML → 校验 → 验收），保存到工作目录，文件名用页面语义。
+- 禁止把 HTML 源码或文件内容当作聊天回复粘贴；聊天里只允许一句摘要 + 飞书文档链接。
+- 原型投递：node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> "页面名"（截图 + 可交互 HTML 文件块）。
+
 【飞书交付】
 - 整篇文档正文发布：node "$FEISHU_PUBLISH_DOC" <markdown文件> [--title 标题]。分批 + 断点续传，中途失败重跑同命令即从断点继续。禁止手写建文档/建块的内联脚本。
 - 原型截图 + HTML 附件：node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> [小标题]。
@@ -42,6 +47,9 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 - 用户消息里带文档链接 + 修改建议时：这是要你改原文档，不是新建。先在 workspace/deliverables.json（$FEISHU_DELIVERABLES）里按链接里的文档 id 查登记，然后用 node "$FEISHU_PUBLISH_DOC" <只含该段新内容的md> --doc-id <文档id> --update-section "锚点标题" 原地替换对应章节；原型迭代用 node "$FEISHU_EMBED_PROTOTYPE" <文档id> <html路径> --update 原地刷新截图与附件。
 - 找不到登记或锚点标题时，先向用户确认「没找到原文档记录，是要新出一版还是重发链接」，不要默默新建第 V2/V3 版文档。
 - 禁止用「V2」「按N条建议修改」之类新标题另建文档替代原地更新。
+
+【命名口径沉淀】
+- 被用户纠正命名/口径后，把该口径追加到工作目录 terminology.md（该文件存在即自动注入后续所有会话）。
 
 【大生成先确认】
 - 全新方案/PRD 这类大交付（预计发布整篇文档或原型）前，先用一小段话向用户复述你理解的模块/页面/字段清单，收到「可以/确认/开始」等肯定回复后再动手。用户消息已经足够明确（列清了模块/页面/字段）时可直接开始，不必追问。
@@ -185,7 +193,10 @@ function terminologySection(workDir: string): string {
 export function createClaudeRunner({
   baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none',
 }: ClaudeRunnerOptions): ClaudeRunner {
-  const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name), terminologySection(workDir)].filter(Boolean).join('\n\n');
+  // 通用基线（交付/原型/质量规则）对所有 bot 生效；system_prompt 是项目业务增量，
+  // 追加在基线之后合并注入，而不是整体覆盖（覆盖会让自定义 bot 丢失质量规则）。
+  const rules = [BASE_REQUIREMENTS, defaultRules(name), systemRules, terminologySection(workDir)]
+    .filter(Boolean).join('\n\n');
   const MAX_RETRIES = 2;
 
   // abort 原因透传：撤回中止（abort(new Error('recalled'))）与普通中止区分，
