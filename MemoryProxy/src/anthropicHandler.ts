@@ -262,16 +262,16 @@ function extractApiKey(c: Context): string {
 }
 
 /**
- * Heuristically decide whether a `thinking` block carries a valid native
- * Anthropic/Bedrock signature.
+ * Decide whether a `thinking` block carries a signature worth passing back.
+ *
+ * ponytail: 原版按"原生 Anthropic base64 签名"启发式校验（拒绝 UUID 格式），
+ * 但部分中转（如 ps.air-outer.com/deepseek）返回的签名就是 UUID，且其
+ * thinking 模式强制要求回传 thinking 块——剥掉直接 400。现在只剥缺失/空
+ * 签名的块；若上游是真 Anthropic 且拒收伪造签名，再按上游收紧。
  */
 function hasValidThinkingSignature(block: Record<string, unknown>): boolean {
   const sig = block.signature;
-  if (typeof sig !== "string" || sig.length < 40) return false;
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sig)) {
-    return false;
-  }
-  return /^[A-Za-z0-9+/=]+$/.test(sig);
+  return typeof sig === "string" && sig.trim().length > 0;
 }
 
 /**
