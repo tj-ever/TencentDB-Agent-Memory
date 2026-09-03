@@ -101,6 +101,13 @@ function buildPassthroughHeaders(c: Context, config: ProxyConfig): Record<string
       headers[k] = v;
     }
   }
+  // 上游中转（TokenHub/one-api 类）按 User-Agent 做客户端检测：OpenAI SDK 的
+  // "OpenAI/JS x.x" UA 会被 401 unauthorized_client_error 拒掉。标准 handler 路径
+  // （handler.ts / anthropicHandler.ts）都会用 config.upstream.userAgent 覆盖 UA，
+  // passthrough 路径必须同样覆盖，否则 knowledge 服务的 SDK 调用全部失败。
+  if (config.upstream.userAgent) {
+    headers["user-agent"] = config.upstream.userAgent;
+  }
   if (config.upstream.apiKey) {
     for (const k of Object.keys(headers)) {
       const lower = k.toLowerCase();
