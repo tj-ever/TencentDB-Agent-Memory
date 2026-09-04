@@ -500,9 +500,31 @@ if (updateSection) {
     process.exit(1);
   }
   unlinkSync(statePath);
+  const permU = await grantRequesterAccess(tok, uDocId);
   registerDeliverable({ kind: 'doc-update', doc_id: uDocId, section: updateSection, blocks: expectedTotal, md: basename(mdPath) });
-  console.log(JSON.stringify({ ok: true, doc_id: uDocId, url: `https://my.feishu.cn/docx/${uDocId}`, updated: updateSection, blocks: expectedTotal, check }));
+  console.log(JSON.stringify({ ok: true, doc_id: uDocId, url: `https://my.feishu.cn/docx/${uDocId}`, updated: updateSection, blocks: expectedTotal, perm: permU, check }));
   process.exit(0);
+}
+
+// ---------- 文档授权 ----------
+// app 身份建的文档属主是 app 本身（用户打开会被要求「向应用申请权限」）。
+// 发布成功后把编辑权限授给发起请求的飞书用户（claudeRunner 注入 FEISHU_OPEN_ID）。
+// best-effort：授权失败不阻断发布（典型原因：应用未开通 docs:permission.member:create
+// 等 scope），只打警告提醒去开放平台开通。
+async function grantRequesterAccess(tok, docId) {
+  const openId = process.env.FEISHU_OPEN_ID;
+  if (!openId) return { granted: false, reason: 'FEISHU_OPEN_ID 未注入' };
+  try {
+    await api(tok, 'POST', `/drive/v1/permissions/${docId}/members?type=docx`, {
+      member_type: 'openid', member_id: openId, perm: 'edit',
+    });
+    return { granted: true };
+  } catch (err) {
+    const msg = String(err instanceof Error ? err.message : err);
+    console.error(`[publish] 警告：文档 ${docId} 授权给请求者失败（${msg.slice(0, 200)}）。`);
+    console.error('[publish] 应用需在开放平台开通权限（任一即可）：docs:permission.member:create / drive:drive / docs:doc。');
+    return { granted: false, reason: msg.slice(0, 200) };
+  }
 }
 
 let state = null;
@@ -558,6 +580,7 @@ if (check.errors.length) {
   process.exit(1);
 }
 unlinkSync(statePath); // 自检通过，清掉断点文件
+const perm = await grantRequesterAccess(tok, docId);
 registerDeliverable({
   kind: 'doc',
   title: opt('title') || defaultTitle,
@@ -572,5 +595,6 @@ console.log(JSON.stringify({
   url: `https://my.feishu.cn/docx/${docId}`,
   units: units.length,
   blocks: blockCount,
+  perm,
   check,
 }));

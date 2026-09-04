@@ -48,7 +48,13 @@ async function req(method: string, url: string, token: string | null, body?: unk
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  return res.json() as Promise<Record<string, unknown>>;
+  const out = await res.json() as Record<string, unknown>;
+  // 飞书业务错误在 body.code 里（如 99991672 权限 scope 缺失），HTTP 仍是 200——
+  // 不检查的话提权失败会被静默吞掉（2026-09-04 海大文档排查即栽在这）。
+  if (typeof out.code === 'number' && out.code !== 0) {
+    throw new Error(`feishu ${String(out.code)}: ${String(out.msg ?? '')}`);
+  }
+  return out;
 }
 
 async function tenantToken(feishu: FeishuCreds): Promise<string> {
@@ -79,23 +85,29 @@ export async function openDocsFromText(
   const results: DocShareResult[] = [];
   for (const { id, type } of files) {
     const row: DocShareResult = { id, type };
-    if (openId) {
-      row.user = await req('POST', `${API}/drive/v1/permissions/${id}/members?type=${type}`, token, {
-        member_type: 'openid',
-        member_id: openId,
-        perm: 'edit',
-        type: 'user',
-      });
+    // 逐个文件兜错：打字机流式期间会先匹配到 20+ 字符的半截 token，那些调用必然
+    // 报「文档不存在」；一个失败不能中断后面（最终全文会再提权一次）。
+    try {
+      if (openId) {
+        row.user = await req('POST', `${API}/drive/v1/permissions/${id}/members?type=${type}`, token, {
+          member_type: 'openid',
+          member_id: openId,
+          perm: 'edit',
+          type: 'user',
+        });
+      }
+      if (chatId) {
+        row.chat = await req('POST', `${API}/drive/v1/permissions/${id}/members?type=${type}`, token, {
+          member_type: 'openchat',
+          member_id: chatId,
+          perm: 'edit',
+          type: 'chat',
+        });
+      }
+      row.public = await req('PATCH', `${API}/drive/v1/permissions/${id}/public?type=${type}`, token, PUBLIC_BODY);
+    } catch (err) {
+      console.error(`[doc-share] 提权失败 ${type}/${id}:`, err instanceof Error ? err.message : String(err));
     }
-    if (chatId) {
-      row.chat = await req('POST', `${API}/drive/v1/permissions/${id}/members?type=${type}`, token, {
-        member_type: 'openchat',
-        member_id: chatId,
-        perm: 'edit',
-        type: 'chat',
-      });
-    }
-    row.public = await req('PATCH', `${API}/drive/v1/permissions/${id}/public?type=${type}`, token, PUBLIC_BODY);
     results.push(row);
   }
   return results;
