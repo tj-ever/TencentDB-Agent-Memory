@@ -80,12 +80,16 @@ export function createBridgeServer() {
 
       if (one && req.method === 'PUT') {
         const id = decodeURIComponent(one[1]!);
+        const input = await readBody(req) as BotInput;
         // 保存即生效：运行中的 bot 改配置后自动重启，否则 WS 还握着旧凭证，新 app 的消息进不来。
+        // 重启意图以「保存前是否在跑」为准，payload 显式 enabled=false 时才不拉起——
+        // 不能读 stopBot 之后的 bot.enabled：stopBot 会先持久化 enabled=false，
+        // 部分 PUT（不带 enabled 字段）会被它污染导致永不重启。
         const wasRunning = statusOf(id).status === 'running';
         if (wasRunning) await stopBot(id);
-        const bot = updateBot(id, await readBody(req) as BotInput);
+        const bot = updateBot(id, input);
         if (!bot) return envelope(res, 404, 404, 'BOT_NOT_FOUND', null);
-        if (wasRunning && bot.enabled) {
+        if (input.enabled ?? wasRunning) {
           try { await startBot(id); }
           catch (err) { console.error(`[${id}] 保存后自动重启失败(配置已保存):`, err instanceof Error ? err.message : String(err)); }
         }

@@ -120,6 +120,14 @@ describe('PUT /api/bots/:id 保存即重启', () => {
     expect(runtime.startBot).not.toHaveBeenCalled();
   });
 
+  it('部分字段 PUT（不带 enabled）且保存前在跑 → 仍重启（stopBot 持久化 enabled=false 不得阻断）', async () => {
+    // updateBot/getBot 返回 enabled:false，模拟 stopBot 已把 enabled 写成 false 的落盘状态
+    const { port, runtime } = await setup('running', { id: 'bot-x', enabled: false });
+    const res = await putBot(port, { name: '海大' });
+    expect(res.status).toBe(200);
+    expect(runtime.startBot).toHaveBeenCalledWith('bot-x');
+  });
+
   it('重启失败 → 配置仍保存，返回 200 且状态带 error', async () => {
     const { server, port } = await startServer('secret-tok');
     servers.push(server);
