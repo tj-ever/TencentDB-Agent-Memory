@@ -120,6 +120,13 @@ skill:
   endpoint: "http://memory-core:8420"
   serviceToken: "${MEMORY_CORE_GATEWAY_API_KEY}"
 
+# knowledge 注入器开关：injectors 里列了 knowledge，但 knowledge.enabled 默认 false——
+# 不生成这段的话 knowledge-tools-injector 永远不注册，bot 上下文里没有 <knowledge_tools> 块。
+knowledge:
+  enabled: true
+  endpoint: "http://memory-core:8420"
+  serviceToken: "${MEMORY_CORE_GATEWAY_API_KEY}"
+
 auth:
   enabled: $(bool $PROXY_ENABLE_AUTH)
   url: "http://memory-core:8420"
