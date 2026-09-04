@@ -79,9 +79,17 @@ export function createBridgeServer() {
       }
 
       if (one && req.method === 'PUT') {
-        const bot = updateBot(decodeURIComponent(one[1]!), await readBody(req) as BotInput);
+        const id = decodeURIComponent(one[1]!);
+        // 保存即生效：运行中的 bot 改配置后自动重启，否则 WS 还握着旧凭证，新 app 的消息进不来。
+        const wasRunning = statusOf(id).status === 'running';
+        if (wasRunning) await stopBot(id);
+        const bot = updateBot(id, await readBody(req) as BotInput);
         if (!bot) return envelope(res, 404, 404, 'BOT_NOT_FOUND', null);
-        return envelope(res, 200, 0, 'ok', view(bot));
+        if (wasRunning && bot.enabled) {
+          try { await startBot(id); }
+          catch (err) { console.error(`[${id}] 保存后自动重启失败(配置已保存):`, err instanceof Error ? err.message : String(err)); }
+        }
+        return envelope(res, 200, 0, 'ok', view(getBot(id)!));
       }
 
       if (one && req.method === 'DELETE') {
