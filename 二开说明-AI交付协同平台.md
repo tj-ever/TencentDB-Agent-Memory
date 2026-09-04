@@ -237,7 +237,30 @@ cp .env.example .env
 4. `MemoryBridge/` 为独立目录，无合并冲突风险；只需确认 Dockerfile/deploy 脚本引用路径未失效。
 5. 合并后必须全量跑「当前检查命令」（CI `custom-code` job 即其自动化形态），并人工回归机器人启停与 `/v3/config/upstream` 面板读写。
 
-## 安全约束
+## 配置链与静默降级规范（二开防回归）
+
+背景判例（2026-09-04，飞书机器人看不到团队知识库）：`start-proxy.sh` 模板把 `knowledge` 列进了 `injection.injectors`，却没生成 `knowledge:` 配置段；`config.ts` 默认 `knowledge.enabled: false`，注入器静默不注册，bot 上下文里永远没有 `<knowledge_tools>` 块。
+
+### 问题归属判定：官方基线 bug 还是二开导致
+
+排查方法（git 考古，判定任何线上问题的归属时照此执行）：
+
+```bash
+# 定位引入行/文件的第一个 commit
+git log --oneline --reverse --diff-filter=A -- <文件>
+git log --oneline -S '<关键字符串>' --reverse -- <文件>
+```
+
+本判例结论：**官方基线 bug**。初始导入 commit `97f9465`（2026-08-15，官方作者）即同时包含 injectors 列表里的 `knowledge` 和模板缺失的 `knowledge:` 段；二开 commit `6429bed` 只加了 `systemUsers` 的 knowledge 账号，未触碰注入器配置。二开（飞书机器人 + 团队知识库问答）只是第一个真正踩到这条链路的场景。
+
+### 以后还会不会有这类问题
+
+会——只要「一个能力分布在多层（代码开关 / 配置段 / 部署模板），且失效时静默降级」，加新功能时就可能再犯。已审计当前模板全部功能段（tdai/skill/knowledge/auth/sessionInit/costGuard/injection/redis）无同类错位；其余未生成的段（opik/langfuse/storage 等）均为默认关闭的可选项，符合预期。防回归规则：
+
+1. **部署模板与代码开关联动**：`deploy/global-images/start-*.sh` 新增或开启任何功能（injectors、handler、前置认证等）时，必须核对 `config.ts` 中对应段的默认值——凡默认 `enabled: false` 的段，模板必须显式生成；改动 PR 里两处必须同 diff 出现。
+2. **禁止静默降级掩盖配置缺失**：能力被列入清单（如 `injectors` 数组）但配置段缺失/禁用时，必须在启动日志打 ERROR 级告警（现状是注入器返回 0 块、无任何日志），不允许「优雅降级」变成「静默失联」。二开新增注入器/能力时按此执行。
+3. **保存即生效**：面板/管理 API 修改运行时配置（凭证、绑定、提示词等）必须同步让运行态生效（参照 `MemoryBridge/src/http.ts` PUT 处理：运行中先 stop、保存后 start；`enabled=false` 只停不启；重启失败不吞错、返回带 error 状态），并配对应测试（`http.test.ts` 已有 4 个用例为模板）。
+4. **此类问题固定排查路径**：proxy 日志 grep 注入器 id（如 `knowledge-tools-injector`）→ 没有则查注册谓词（如 `shouldRegisterKnowledgeInjector`）→ 查 `buildConfig` 的 YAML 合并范围（**注意：`config.override.yaml` 只合并 `upstream`/`upstreamProfiles` 两段，其余段以 `--config` 主配置文件为准**，主配置由 start 脚本每次启动重新生成）→ 最后核对 kernel 侧数据是否存在（`/v3/knowledge/list`、`/v3/meta/agent-fixed-asset/list-with-detail`）。
 
 - API key、飞书 app secret、Mem user key 只通过环境变量或面板密钥字段提供，不提交到 Git。
 - Bridge 的机器人工作目录是文件访问边界；默认提示词禁止读取其他项目目录。
