@@ -99,18 +99,25 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
   }
 
   if (stage === "team") {
-    // Team options: 只列真实 team，一次性全部展示（用户明确要求不分页，历史上
-    // 这里曾先静默截断、后分页，都造成第 5 个起的团队选不到）。主动"跳过"入口
-    // 只在 asset_confirm 阶段，后续阶段"异常/未识别"由 init.ts 兜底 bypass。
+    // Team options: 只列真实 team。主动"跳过"入口只在 asset_confirm 阶段，后续
+    // 阶段"异常/未识别"由 init.ts 兜底 bypass。
     //
     // 调用方（init.ts）保证 teams.length ≥ 2 — 单 team 会被 auto-select 跳过，
     // 根本不会走到 team form。form builder 不再兜底占位。
     // description 留空 —— label 已含 team 名 + id 后缀，重复一遍 "Team: name"
     // 只是噪音。
-    const teamOpts = teams.map((t) => ({
+    // 必须分页：CC AskUserQuestion 硬限制单问题 ≤4 选项（zod maxItems:4），
+    // 超限整个 tool_use 被 CC 拒绝（InputValidationError），实测 5 团队全量展示
+    // 会触发 CC 拒绝 → 模型接管自建表单 → 绕过 proxy 状态机 → 会话 bypass。
+    const pageIndex = Math.max(0, data.pageIndex ?? 0);
+    const page = computePagination(teams.length, pageIndex);
+    const teamOpts = teams.slice(page.start, page.end).map((t) => ({
       label: `${t.team_name} (${t.team_id.slice(-8)})`,
       description: "",
     }));
+    if (!page.isLastPage) {
+      teamOpts.push({ label: MORE_LABEL, description: `查看下一批（还剩 ${page.total - page.end} 个 Team）` });
+    }
     if (teamOpts.length < 2) {
       throw new Error(
         `[cc form] team stage requires ≥2 teams (got ${teamOpts.length}). ` +

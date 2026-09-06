@@ -63,6 +63,8 @@ export interface SessionInitState {
    * - 默认 0（首页）；每次用户选"更多"，handler 把它 +1 重发 form。
    */
   agentPageIndex?: number;
+  /** CC: team_select 阶段的分页游标，语义同 `agentPageIndex`。CC 表单硬限制 ≤4 选项，团队多时靠它翻页。 */
+  teamPageIndex?: number;
   /** CC: 用户在 agent_select 阶段选定的 agent_id（用于 pending_task_select 阶段）。 */
   selectedAgentId?: string;
   /** Resolved agent detail (cached after selection), used to inject context every request. */
