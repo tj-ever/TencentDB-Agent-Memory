@@ -106,12 +106,17 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
     // 根本不会走到 team form。form builder 不再兜底占位。
     // description 留空 —— label 已含 team 名 + id 后缀，重复一遍 "Team: name"
     // 只是噪音。
-    // Team 阶段目前不分页 —— 最多渲染 CC_MAX_OPTIONS 个 team（超过的静默截断，
-    // 属于 pre-existing 限制，本次未处理）。
-    const teamOpts = teams.slice(0, CC_MAX_OPTIONS).map((t) => ({
+    // Team 阶段与 agent/task 同一套 4-slot 分页（历史上是静默截断，团队多于
+    // 4 个时第 5 个起永远选不到）。
+    const pageIndex = Math.max(0, data.pageIndex ?? 0);
+    const page = computePagination(teams.length, pageIndex);
+    const teamOpts = teams.slice(page.start, page.end).map((t) => ({
       label: `${t.team_name} (${t.team_id.slice(-8)})`,
       description: "",
     }));
+    if (!page.isLastPage) {
+      teamOpts.push({ label: MORE_LABEL, description: `查看下一批（还剩 ${page.total - page.end} 个 Team）` });
+    }
     if (teamOpts.length < 2) {
       throw new Error(
         `[cc form] team stage requires ≥2 teams (got ${teamOpts.length}). ` +
@@ -121,7 +126,7 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
     questions.push({
       question: titlePrefix + "请选择本次会话所属的 Team：" + SKIP_HINT,
       header: "Team",
-      options: teamOpts.slice(0, CC_MAX_OPTIONS),
+      options: teamOpts,
       multiSelect: false,
     });
     return { questions };

@@ -28,7 +28,6 @@ import {
 } from "../context-injector.js";
 import type { MetadataClient } from "../../meta/client.js";
 import { resolvePresetIdentity, type PresetIdentity } from "../preset.js";
-import { createTrustedRegistration } from "../../custom/session-preset.js";
 
 import { buildFormResponse, FormData, MORE_LABEL } from "./form.js";
 import { computePagination } from "./pagination.js";
@@ -586,7 +585,6 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
-  serverPreset?: PresetIdentity,
   agentSource: string = "claude-code",
 ): Promise<SessionInitResult> {
   // 上游别名也是会话隔离维度，必须与 handler 绑定的持久化身份一致。
@@ -595,7 +593,7 @@ export async function handleSessionInit(
   try {
     return await handleSessionInitInner(
       sessionKey, userId, messages, config, store, reqCtx,
-      metadataClient, userKey, spaceId, presetIdentity, serverPreset, agentSource,
+      metadataClient, userKey, spaceId, presetIdentity, agentSource,
     );
   } finally {
     // 无论正常/异常返回都尝试发一次埋点；装饰器内部自吞异常。
@@ -619,7 +617,6 @@ async function handleSessionInitInner(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
-  serverPreset?: PresetIdentity,
   agentSource: string = "claude-code",
 ): Promise<SessionInitResult> {
   const compositeKey = `${agentSource}:${sessionKey}`;
@@ -724,18 +721,6 @@ async function handleSessionInitInner(
         bypassed: true,
       } as SessionInitState);
       return { intercepted: false, bypassed: true, resetFlow: state?.resetFlow ?? false };
-    }
-
-    const trusted = createTrustedRegistration(serverPreset, sessionKey, userId);
-    if (trusted) {
-      console.log(
-        `[session-init:cc] session=${compositeKey} server preset → register team=${serverPreset?.teamId} agent=${serverPreset?.agentId}`,
-      );
-      return completeRegistration(
-        trusted.selection, trusted.state, trusted.teams, serverPreset?.teamId,
-        compositeKey, sessionKey, userId, config, store, reqCtx,
-        stripped, metadataClient, userKey, spaceId,
-      );
     }
 
     let teams: TeamOption[];
@@ -935,6 +920,7 @@ async function handleSessionInitInner(
       const fd: FormData = {
         teams,
         stage: "team",
+        pageIndex: state.teamPageIndex ?? 0,
         stream: reqCtx.stream,
         modelId: reqCtx.modelId,
       };
@@ -951,6 +937,26 @@ async function handleSessionInitInner(
   if (state.status === "pending_team_select") {
     const lastUserText = getLastUserMessageText(messages);
     const cachedTeams = state.cachedTeams ?? [];
+    // 「更多 →」→ 翻页重发 team 表单（与 agent 阶段的 MORE 处理同构；团队
+    // 超过 4 个时靠它访问第 5 个起的团队）。
+    if (lastUserText.includes(MORE_LABEL)) {
+      const currentPage = state.teamPageIndex ?? 0;
+      const nextPage = currentPage + 1;
+      const totalPages = computePagination(cachedTeams.length, 0).totalPages;
+      const safeNextPage = nextPage > totalPages - 1 ? 0 : nextPage;
+      await store.set(compositeKey, { ...state, teamPageIndex: safeNextPage } as SessionInitState);
+      console.log(
+        `[session-init:cc] session=${compositeKey} team page ${currentPage} → ${safeNextPage}`,
+      );
+      const fd: FormData = {
+        teams: cachedTeams,
+        stage: "team",
+        pageIndex: safeNextPage,
+        stream: reqCtx.stream,
+        modelId: reqCtx.modelId,
+      };
+      return { intercepted: true, response: buildFormResponse(fd) };
+    }
     const teamId = extractTeamFromOptionText(lastUserText, cachedTeams);
 
     if (teamId && teamId !== BYPASS_MARKER) {
