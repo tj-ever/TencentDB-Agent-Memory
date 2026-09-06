@@ -255,12 +255,17 @@ export function buildFormResponse(data: FormData): Response {
       // 伪造的 assistant 消息带一个 thinking 块：上游若以 thinking 模式跑模型
       // （如 deepseek-v4-flash），会把「历史 assistant 消息必须回传 thinking」
       // 当硬校验，缺块时整轮 4xx/5xx（实测报 "The content[].thinking in the
-      // thinking mode must be passed back to the API"）。空 signature 上游接受。
+      // thinking mode must be passed back to the API"）。
+      //
+      // ⚠️ signature 必须非空：anthropicHandler.sanitizeThinkingBlocks 会在转发
+      // 前剥掉空签名 thinking 块（为真 Anthropic 上游写的兼容逻辑），空签名等于
+      // 没加——CC 回传历史后 proxy 自己把块剥了，上游照样 400（实测 stripped 5
+      // invalid thinking blocks）。AgentRouter/x666 不校验签名内容，非空即可。
       // 文案保持极短 —— 它会随历史在每轮回传，长了烧 token。
       controller.enqueue(sse("content_block_start", {
         type: "content_block_start",
         index: 0,
-        content_block: { type: "thinking", thinking: "", signature: "" },
+        content_block: { type: "thinking", thinking: "", signature: "cc-session-init" },
       }));
       controller.enqueue(sse("content_block_delta", {
         type: "content_block_delta",
@@ -270,7 +275,7 @@ export function buildFormResponse(data: FormData): Response {
       controller.enqueue(sse("content_block_delta", {
         type: "content_block_delta",
         index: 0,
-        delta: { type: "signature_delta", signature: "" },
+        delta: { type: "signature_delta", signature: "cc-session-init" },
       }));
       controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
 
