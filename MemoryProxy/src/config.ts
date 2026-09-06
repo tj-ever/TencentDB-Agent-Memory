@@ -279,6 +279,12 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     if (ov.upstreamProfiles) {
       yaml = { ...yaml, upstreamProfiles: ov.upstreamProfiles };
     }
+    // injection 段同样按节合并（启动日志声明加载了 override 的全部顶层段，
+    // 但这里白名单外的段会被静默丢弃——2026-09-06 externalGatewayUrl 踩坑：
+    // 写在 override 里不生效，排查到 buildConfig 才发现白名单没包含它）。
+    if (ov.injection) {
+      yaml = { ...yaml, injection: { ...(yaml.injection ?? {}), ...ov.injection } };
+    }
   }
 
   return {
