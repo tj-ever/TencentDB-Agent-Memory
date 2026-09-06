@@ -583,7 +583,7 @@ export async function handleChatCompletions(
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
   const requestedModel = typeof body.model === "string" ? body.model : "unknown";
-  if (!upstreamRoute.model && !isModelInPricing(config.creditPricing, requestedModel)) {
+  if (!upstreamRoute.entry && !isModelInPricing(config.creditPricing, requestedModel)) {
     return c.json(
       {
         error: {
@@ -602,9 +602,9 @@ export async function handleChatCompletions(
   // routing / logging / forwarding, so model_id stays the canonical identity
   // across the whole pipeline. No-op when `model` is already a real id/unknown.
   // 服务端上游模型不受客户端展示名校验约束。
-  const modelId = upstreamRoute.model ?? resolveModelId(config.creditPricing, requestedModel);
+  const modelId = resolveModelId(config.creditPricing, requestedModel);
   const modelAliasApplied = typeof body.model === "string" && modelId !== requestedModel;
-  if (upstreamRoute.model || modelAliasApplied) body.model = modelId;
+  if (modelAliasApplied) body.model = modelId;
 
   // ── System-user short-circuit ────────────────────────────────────────────
   // Internal service accounts (see `systemUsers` config) bypass the entire

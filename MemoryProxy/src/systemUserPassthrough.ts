@@ -507,8 +507,10 @@ export async function handleSystemUserPassthrough(
     bodyObj = tryParseJson(bodyTextForTrace);
   }
   if (bodyObj) {
-    const modelChanged = !!route.model && bodyObj.model !== route.model;
-    if (route.model) bodyObj.model = route.model;
+    // 全局上游可能配置默认模型；开发者上游（命中 agents 表）一律透传，不改写 model。
+    const forcedModel = route.entry ? undefined : config.upstream.model;
+    const modelChanged = !!forcedModel && bodyObj.model !== forcedModel;
+    if (forcedModel) bodyObj.model = forcedModel;
     const removedImages = stripUnsupportedImages(bodyObj, config.upstream.supportsImages);
     const changed = modelChanged || removedImages > 0;
     if (changed) {

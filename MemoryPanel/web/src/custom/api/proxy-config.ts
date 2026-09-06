@@ -4,9 +4,6 @@ export interface ProxyAgentConfig {
   name: string;
   originalName?: string;
   url: string;
-  model: string;
-  binding?: { team_id: string; agent_id: string; task_id?: string };
-  memory?: { key?: string; spaceId?: string };
 }
 
 export interface ProxyProfile {
@@ -41,9 +38,6 @@ export interface ProxyConfigInput {
   profiles?: Array<Pick<ProxyProfile, 'id' | 'name' | 'url' | 'apiKey' | 'userAgent' | 'model' | 'supportsImages' | 'enabled'>>;
   agents?: Array<Pick<ProxyAgentConfig, 'name' | 'url'> & {
     originalName?: string;
-    model?: string;
-    binding?: ProxyAgentConfig['binding'];
-    memory?: ProxyAgentConfig['memory'];
   }>;
 }
 

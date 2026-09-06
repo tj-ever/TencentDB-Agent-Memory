@@ -10,10 +10,6 @@ interface AgentChange {
   name: string;
   originalName?: string;
   url: string;
-  userAgent?: string;
-  model?: string;
-  binding?: { team_id?: string; agent_id?: string; task_id?: string };
-  memory?: { key?: string; spaceId?: string };
 }
 
 interface ProfileChange {
@@ -57,13 +53,6 @@ function snapshot(config: ProxyConfig) {
     agents: Object.entries(config.upstream.agents).map(([name, entry]) => ({
       name,
       url: entry.url,
-      userAgent: entry.userAgent ?? "",
-      model: entry.model ?? "",
-      binding: entry.binding,
-      // memory.key 出站回显仅给掩码，避免泄露明文凭据；spaceId 可明文。
-      ...(entry.memory
-        ? { memory: { key: mask(entry.memory.key ?? ""), ...(entry.memory.spaceId ? { spaceId: entry.memory.spaceId } : {}) } }
-        : {}),
     })),
   };
 }
@@ -133,7 +122,7 @@ export function applyProfileChanges(
   return { profiles, upstreamPatch };
 }
 
-export function agentMap(changes: AgentChange[], current: Record<string, AgentUpstreamEntry>): Record<string, AgentUpstreamEntry> {
+export function agentMap(changes: AgentChange[], _current: Record<string, AgentUpstreamEntry>): Record<string, AgentUpstreamEntry> {
   const result: Record<string, AgentUpstreamEntry> = {};
   for (const change of changes) {
     const name = change.name?.trim();
@@ -141,26 +130,7 @@ export function agentMap(changes: AgentChange[], current: Record<string, AgentUp
     if (!name || !url || !/^[A-Za-z0-9._-]+$/.test(name) || result[name]) {
       throw new Error("invalid or duplicate agent name");
     }
-    const teamId = change.binding?.team_id?.trim();
-    const agentId = change.binding?.agent_id?.trim();
-    const taskId = change.binding?.task_id?.trim();
-    const memKey = change.memory?.key?.trim();
-    const memSpace = change.memory?.spaceId?.trim();
-    // agent 改名时按旧名查存量条目（掩码 key / spaceId 的保留源），否则改名即静默丢 key → 重复开号。
-    const prev = current[change.originalName?.trim() || name];
-    // 入站 memory.key 为掩码（"…"）视为未修改：保留磁盘现有明文，避免把掩码写坏配置。
-    const retainedKey = memKey?.includes("…") ? prev?.memory?.key : undefined;
-    const effectiveKey = retainedKey || (memKey && !memKey.includes("…") ? memKey : undefined);
-    const effectiveSpace = memSpace || prev?.memory?.spaceId;
-    result[name] = {
-      url,
-      ...(change.userAgent?.trim() ? { userAgent: change.userAgent.trim() } : {}),
-      ...(change.model?.trim() ? { model: change.model.trim() } : {}),
-      ...(teamId && agentId ? { binding: { team_id: teamId, agent_id: agentId, ...(taskId ? { task_id: taskId } : {}) } } : {}),
-      ...(effectiveKey
-        ? { memory: { key: effectiveKey, ...(effectiveSpace ? { spaceId: effectiveSpace } : {}) } }
-        : {}),
-    };
+    result[name] = { url };
   }
   return result;
 }

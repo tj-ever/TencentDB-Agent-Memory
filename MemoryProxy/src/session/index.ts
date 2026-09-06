@@ -114,11 +114,9 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
-  serverPreset?: PresetIdentity,
 ): Promise<SessionInitResult> {
   // Anthropic 协议一律走 claude-code 状态机。上游 agent 路径（/dev-fw/）会让
-  // agentSource 变成 dev-fw 而非 claude-code——但底下的注入/宿主都是 Anthropic 语义，
-  // 只有 cc 状态机支持 server-preset（binding）直注册。
+  // agentSource 变成 dev-fw 而非 claude-code——但底下的注入/宿主都是 Anthropic 语义。
   if (agentSource === "claude-code" || reqCtx.protocol === "anthropic") {
     return ccHandle(
       sessionKey, userId, messages, config, store,
@@ -136,7 +134,6 @@ export async function handleSessionInit(
       userKey,
       spaceId,
       presetIdentity,
-      serverPreset,
       agentSource,
     );
   }

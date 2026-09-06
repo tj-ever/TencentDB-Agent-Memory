@@ -36,12 +36,12 @@ upstream:
   # 留空则透传客户端原始 API Key。
   apiKey: "<YOUR_TOKENHUB_API_KEY>"
 
-  # ── Per-Agent 覆盖（v4.3+ 简化：仅 URL 分流，不再配置 agent 级 Key） ────────
-  # 按 agent 名（URL 路径前缀 /{agent}/...）覆盖 url + model。
-  # Anthropic 和 OpenAI 协议共用同一张表。
+  # ── Per-Agent 开发者上游（BYOK：只做 URL 分流） ─────────────────────────────
+  # 按 agent 名（URL 路径前缀 /{agent}/...）覆盖上游 url。Anthropic 和 OpenAI
+  # 协议共用同一张表。每个条目只有一个字段：url。
   #
-  # 关键变更：v4.3+ 去掉 agent 级 apiKey 字段。模型 Key 一律由调用方透传，
-  # proxy 不做服务端替换。记忆身份通过独立的 x-tdai-user-key 请求头携带。
+  # 模型 Key 一律由调用方透传（ANTHROPIC_AUTH_TOKEN 等），proxy 不做服务端替换；
+  # 记忆身份通过独立的 x-tdai-user-key 请求头携带（面板「成员管理」下发的 sk-mem-*）。
   #
   # 兜底规则：
   #
@@ -49,12 +49,13 @@ upstream:
   #   │ 该 agent 的配置                │ 用的 url   │ 用的 apiKey             │
   #   ├────────────────────────────────┼────────────┼─────────────────────────┤
   #   │ 不在 agents 里                 │ upstream.url│ upstream.apiKey (兜底) │
-  #   │ 在 agents 里（只有 url/model）  │ agent.url  │ 透传客户端请求的 key   │
+  #   │ 在 agents 里                   │ agent.url  │ 透传客户端请求的 key   │
   #   └────────────────────────────────┴────────────┴─────────────────────────┘
   #
   # 注意：一旦 agent 出现在这张表里，外层 upstream.apiKey 的兜底就被切断，
-  # 调用方必须携带自己的模型 Key 进行认证。
-  # 历史配置中的 agent.apiKey 会被静默忽略。
+  # 调用方必须携带自己的模型 Key；同时跳过价目表校验（非 TokenHub 上游
+  # CreditDelta=0，仅记 usage）。历史配置中的 agent 级 apiKey/binding/memory/
+  # model/userAgent 字段会被静默忽略。
   #
   # 完整优先级（高→低）：
   #   1. costGuard 内部路由自带的凭据（cheap-model 兜底）
@@ -62,23 +63,13 @@ upstream:
   #   3. costGuard.anthropicUpstream.url（仅 Anthropic 协议）
   #   4. upstream.url + upstream.apiKey（未命中 agent 时的默认）
   agents: {}
-    # claude-code:                                        # 开发者上游模式
+    # my-dev:                                             # 开发者上游（BYOK）
     #   url: "https://developer-upstream.example.com/v1"
-    #   # 模型 Key 由调用方自己携带（ANTHROPIC_AUTH_TOKEN）。
-    #   # 记忆身份两种方式二选一：
-    #   #   a) 调用方在 ANTHROPIC_CUSTOM_HEADERS 里带 x-tdai-user-key；
-    #   #   b) 服务端配固定记忆账号（最小配置）：开发者只需自己的模型 Key + 路径，
-    #   #      命中后 proxy 以其 memory 身份注入记忆 / 计费，无需开发者传用户 key，
-    #   #      也无需加入任何团队。
-    #   binding: { team_id: "team-x", agent_id: "agent-fw1" }
-    #   memory: { key: "sk-mem-xxxx", spaceId: "spc-yyy" }
-    # codex:                                              # 客户端 Key 透传模式
-    #   url: "https://codex-upstream.example.com/v1"
-    #   # 同样不需要配置 Key，调用方提供自己的模型凭据。
-    # 注意：workbuddy / codebuddy / claude-code 等客户端不需要单独配 per-agent override，
-    # 它们的请求会自然落到外层 upstream.url + 鉴权走的 user_key，proxy 自动按 user_id
-    # 在内核拉取对应的 team/agent/task 上下文（不需要手动创建资源）。
-    # 用户资产（Team / Agent / Task / 用户授权）请在 MemoryPanel Web 面板里创建。
+    #   # 开发者终端只需三项（Claude Code 为例）：
+    #   #   ANTHROPIC_BASE_URL=http://<proxy>:8096/my-dev/<spaceId>
+    #   #   ANTHROPIC_AUTH_TOKEN=<自己的模型 Key>
+    #   #   ANTHROPIC_CUSTOM_HEADERS="x-tdai-user-key: <sk-mem-* 记忆 Key>"
+    #   # 记忆注入 / 会话初始化 / 计费记录复用内置管道，无任何额外配置。
     # 注意：workbuddy / codebuddy / claude-code 等客户端不需要单独配 per-agent override，
     # 它们的请求会自然落到外层 upstream.url + 鉴权走的 user_key，proxy 自动按 user_id
     # 在内核拉取对应的 team/agent/task 上下文（不需要手动创建资源）。

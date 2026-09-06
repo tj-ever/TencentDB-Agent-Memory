@@ -120,9 +120,9 @@ Bridge 的运行数据包括：
 
 ### 上游路由
 
-Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.agents` 可按 URL 前缀配置独立的 URL、模型和 Mem binding。
+Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.agents` 是开发者上游（BYOK）表：按 URL 前缀分流到开发者自己的端点，每个条目只有一个字段 `url`。
 
-**Key 分离语义**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不配置/替换任何 agent 级 Key。记忆身份通过独立的 `x-tdai-user-key` 请求头携带。
+**Key 分离语义**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不配置/替换任何 agent 级 Key；记忆身份通过独立的 `x-tdai-user-key` 请求头携带（面板「成员管理」下发的 sk-mem-*）；价目表校验对命中 agent 的请求跳过（非 TokenHub 上游 CreditDelta=0，仅记 usage）。历史配置中的 agent 级 `apiKey`/`binding`/`memory`/`model`/`userAgent` 字段会被静默忽略。
 
 当前路由示例：
 
@@ -132,11 +132,9 @@ Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` �
 /fw1/<space>/v1/...
 ```
 
-内置 Agent：`claude-code`、`codebuddy`、`codex`、`cursor`、`hermes`、`openclaw`、`workbuddy`、`dsh`、`opencode`。内置 Agent 和已配置 Agent 使用第二段作为 `space_id`；自定义 Agent（例如 `fw1`）使用其配置的 URL 和模型。
+内置 Agent：`claude-code`、`codebuddy`、`codex`、`cursor`、`hermes`、`openclaw`、`workbuddy`、`dsh`、`opencode`。内置 Agent 和已配置 Agent 使用第二段作为 `space_id`；自定义 Agent（例如 `fw1`）使用其配置的 URL，会话绑定复用自带 `sessionInit.headerAutoSelect`（`x-team-id`/`x-agent-id`/`x-task-id` 头）或 session-init 表单。
 
-Agent 配置了 `binding.team_id` 和 `binding.agent_id` 时，Proxy 会先调用 MemoryCore 校验调用者是否为该 Team 的 active member（使用 `x-tdai-user-key` 作为记忆身份）；校验通过后将 binding 作为可信会话上下文。
-
-前置认证（路由解析 → 记忆身份解析 → `verifyUserKey` → binding 授权）收敛在 `MemoryProxy/src/custom/upstream.ts` 的 `earlyAuth()` 门面中，`handler.ts` 与 `anthropicHandler.ts` 调用同一入口。
+前置认证（路由解析 → 记忆身份解析 → `verifyUserKey`）收敛在 `MemoryProxy/src/custom/upstream.ts` 的 `earlyAuth()` 门面中，`handler.ts` 与 `anthropicHandler.ts` 调用同一入口。
 
 ### 运行期上游配置
 
@@ -200,7 +198,7 @@ cp .env.example .env
 | 目录 | 内容 |
 | --- | --- |
 | `MemoryBridge/` | 整个子项目（通用交付/原型/质量基线在 `src/claudeRunner.ts` 的 `defaultRules()`） |
-| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`、`trustedPreset()`）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
+| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
 | `MemoryPanel/src/panel/custom/` | 面板反代 Bridge 的 channels 路由、Proxy 上游配置路由、统一注册点 index.ts |
 | `MemoryPanel/web/src/custom/` | 前端机器人管理 API、会话管理组件、系统配置页 |
 | `MemoryPanel/web/src/pages/team/ChannelsPage/` | 机器人管理页面 |
@@ -209,10 +207,10 @@ cp .env.example .env
 
 | 文件 | 改动内容 |
 | --- | --- |
-| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 调用 `custom/upstream.ts` 的 `earlyAuth()` 统一前置认证；anthropicHandler 仅保留 `trustedPreset` |
+| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 调用 `custom/upstream.ts` 的 `earlyAuth()` 统一前置认证；价目表校验仅对未命中 agents 表的请求生效 |
 | `MemoryProxy/src/server.ts` | 注册 `/v3/config/upstream` GET/PUT |
-| `MemoryProxy/src/session/index.ts` | Anthropic 协议一律走 claude-code 状态机 + serverPreset 直注册 |
-| `MemoryProxy/src/types.ts` | Key 分离语义（agent 级 apiKey 已移除） |
+| `MemoryProxy/src/session/index.ts` | Anthropic 协议一律走 claude-code 状态机 |
+| `MemoryProxy/src/types.ts` | Key 分离语义（agent 级只保留 url 字段） |
 | `MemoryProxy/src/auth.ts`、`systemUserPassthrough.ts`、`config.ts`、`codexHandler.ts`、`workbuddyHandler.ts`、`auxiliaryHandler.ts`、`credit-reporter.ts`、`session/claude-code/init.ts` | 配合 Key 分离、记忆身份与内置 Agent 名单（`isBuiltinAgent()`）的小幅适配 |
 | `MemoryProxy/config.example.yaml` | 上游配置示例（agents 映射无 apiKey） |
 | `MemoryPanel/src/panel/http/app.ts` | 注册 `registerCustomRoutes`（一行） |
@@ -264,7 +262,7 @@ git log --oneline -S '<关键字符串>' --reverse -- <文件>
 
 - API key、飞书 app secret、Mem user key 只通过环境变量或面板密钥字段提供，不提交到 Git。
 - Bridge 的机器人工作目录是文件访问边界；默认提示词禁止读取其他项目目录。
-- 自定义 Agent binding 必须经过 Team active member 校验。
+- 开发者上游会话绑定走自带 `sessionInit.headerAutoSelect`，预选值一律对照调用者自己的 team 列表校验，不做服务端受信直通。
 - Proxy 运维配置接口只接受 system admin。
 - 非本机部署时启用 Proxy auth，并限制 Panel、Bridge 和 Proxy 的网络访问范围。
 

@@ -41,7 +41,7 @@ import { writeFailedReportRaw } from "./clickhouse.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "./systemUser.js";
 import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { stripUnsupportedImages } from "./custom/request-body.js";
-import { earlyAuth, trustedPreset } from "./custom/upstream.js";
+import { earlyAuth } from "./custom/upstream.js";
 import { TdaiClient } from "./tdai/client.js";
 import { deriveTdaiIdentity } from "./tdai/identity.js";
 import { extractLatestUserMessage, recordTdaiTurn } from "./tdai/recorder.js";
@@ -595,7 +595,7 @@ export async function handleAnthropicMessages(
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
   const requestedModel = typeof body.model === "string" ? body.model : "unknown";
-  if (!upstreamRoute.model && !isModelInPricing(config.creditPricing, requestedModel)) {
+  if (!upstreamRoute.entry && !isModelInPricing(config.creditPricing, requestedModel)) {
     return c.json(
       {
         type: "error",
@@ -614,9 +614,9 @@ export async function handleAnthropicMessages(
   // routing / logging / forwarding, so model_id stays the canonical identity
   // across the whole pipeline. No-op when `model` is already a real id/unknown.
   // 服务端上游模型不受客户端展示名校验约束。
-  const modelId = upstreamRoute.model ?? resolveModelId(config.creditPricing, requestedModel);
+  const modelId = resolveModelId(config.creditPricing, requestedModel);
   const modelAliasApplied = typeof body.model === "string" && modelId !== requestedModel;
-  if (upstreamRoute.model || modelAliasApplied) body.model = modelId;
+  if (modelAliasApplied) body.model = modelId;
 
   // ── System-user short-circuit ────────────────────────────────────────────
   // Internal service accounts (see `systemUsers` config) bypass the entire
@@ -757,10 +757,8 @@ export async function handleAnthropicMessages(
       const { getMetadataClient } = await import("./meta/client.js");
       const store = getSessionStore();
       const metadataClient = getMetadataClient(config.coreSkill, spaceId, memoryKey);
-      // 上游 agent（按路径第一段）可携带受信内存 binding；调用者已在早期鉴权中
-      // 通过绑定 Team 的 active member 校验，因此客户端无需再传内存身份头。
-      const serverPreset = trustedPreset(upstreamRoute);
-      const presetIdentity = serverPreset ?? parsePresetIdentity(config.sessionInit, lcHeaders);
+      // 会话绑定（team/agent/task 预选）走自带 headerAutoSelect（x-team-id 等头）。
+      const presetIdentity = parsePresetIdentity(config.sessionInit, lcHeaders);
 
       // ── Session Recovery: try L2b binding before falling into session-init form ──
       const compositeKey = `${agentSource}:${sessionKey}`;
@@ -846,7 +844,6 @@ export async function handleAnthropicMessages(
           memoryKey,
           spaceId,
           presetIdentity,
-          serverPreset,
         );
       }
 
