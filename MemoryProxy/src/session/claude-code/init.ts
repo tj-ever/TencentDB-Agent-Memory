@@ -29,7 +29,7 @@ import {
 import type { MetadataClient } from "../../meta/client.js";
 import { resolvePresetIdentity, type PresetIdentity } from "../preset.js";
 
-import { buildFormResponse, FormData, MORE_LABEL } from "./form.js";
+import { buildFormResponse, FormData } from "./form.js";
 import { computePagination } from "./pagination.js";
 import { emitSessionInitTelemetryIfCompleted } from "../init-telemetry.js";
 import {
@@ -920,7 +920,6 @@ async function handleSessionInitInner(
       const fd: FormData = {
         teams,
         stage: "team",
-        pageIndex: state.teamPageIndex ?? 0,
         stream: reqCtx.stream,
         modelId: reqCtx.modelId,
       };
@@ -937,26 +936,6 @@ async function handleSessionInitInner(
   if (state.status === "pending_team_select") {
     const lastUserText = getLastUserMessageText(messages);
     const cachedTeams = state.cachedTeams ?? [];
-    // 「更多 →」→ 翻页重发 team 表单（与 agent 阶段的 MORE 处理同构；团队
-    // 超过 4 个时靠它访问第 5 个起的团队）。
-    if (lastUserText.includes(MORE_LABEL)) {
-      const currentPage = state.teamPageIndex ?? 0;
-      const nextPage = currentPage + 1;
-      const totalPages = computePagination(cachedTeams.length, 0).totalPages;
-      const safeNextPage = nextPage > totalPages - 1 ? 0 : nextPage;
-      await store.set(compositeKey, { ...state, teamPageIndex: safeNextPage } as SessionInitState);
-      console.log(
-        `[session-init:cc] session=${compositeKey} team page ${currentPage} → ${safeNextPage}`,
-      );
-      const fd: FormData = {
-        teams: cachedTeams,
-        stage: "team",
-        pageIndex: safeNextPage,
-        stream: reqCtx.stream,
-        modelId: reqCtx.modelId,
-      };
-      return { intercepted: true, response: buildFormResponse(fd) };
-    }
     const teamId = extractTeamFromOptionText(lastUserText, cachedTeams);
 
     if (teamId && teamId !== BYPASS_MARKER) {

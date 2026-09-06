@@ -99,24 +99,18 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
   }
 
   if (stage === "team") {
-    // Team options: 只列真实 team。主动"跳过"入口只在 asset_confirm 阶段，后续
-    // 阶段"异常/未识别"由 init.ts 兜底 bypass。
+    // Team options: 只列真实 team，一次性全部展示（用户明确要求不分页，历史上
+    // 这里曾先静默截断、后分页，都造成第 5 个起的团队选不到）。主动"跳过"入口
+    // 只在 asset_confirm 阶段，后续阶段"异常/未识别"由 init.ts 兜底 bypass。
     //
     // 调用方（init.ts）保证 teams.length ≥ 2 — 单 team 会被 auto-select 跳过，
     // 根本不会走到 team form。form builder 不再兜底占位。
     // description 留空 —— label 已含 team 名 + id 后缀，重复一遍 "Team: name"
     // 只是噪音。
-    // Team 阶段与 agent/task 同一套 4-slot 分页（历史上是静默截断，团队多于
-    // 4 个时第 5 个起永远选不到）。
-    const pageIndex = Math.max(0, data.pageIndex ?? 0);
-    const page = computePagination(teams.length, pageIndex);
-    const teamOpts = teams.slice(page.start, page.end).map((t) => ({
+    const teamOpts = teams.map((t) => ({
       label: `${t.team_name} (${t.team_id.slice(-8)})`,
       description: "",
     }));
-    if (!page.isLastPage) {
-      teamOpts.push({ label: MORE_LABEL, description: `查看下一批（还剩 ${page.total - page.end} 个 Team）` });
-    }
     if (teamOpts.length < 2) {
       throw new Error(
         `[cc form] team stage requires ≥2 teams (got ${teamOpts.length}). ` +
@@ -251,9 +245,31 @@ export function buildFormResponse(data: FormData): Response {
         },
       }));
 
+      // 伪造的 assistant 消息带一个 thinking 块：上游若以 thinking 模式跑模型
+      // （如 deepseek-v4-flash），会把「历史 assistant 消息必须回传 thinking」
+      // 当硬校验，缺块时整轮 4xx/5xx（实测报 "The content[].thinking in the
+      // thinking mode must be passed back to the API"）。空 signature 上游接受。
+      // 文案保持极短 —— 它会随历史在每轮回传，长了烧 token。
       controller.enqueue(sse("content_block_start", {
         type: "content_block_start",
         index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      }));
+      controller.enqueue(sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "session-init form" },
+      }));
+      controller.enqueue(sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "" },
+      }));
+      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+
+      controller.enqueue(sse("content_block_start", {
+        type: "content_block_start",
+        index: 1,
         content_block: {
           type: "tool_use",
           id: toolUseId,
@@ -264,11 +280,11 @@ export function buildFormResponse(data: FormData): Response {
 
       controller.enqueue(sse("content_block_delta", {
         type: "content_block_delta",
-        index: 0,
+        index: 1,
         delta: { type: "input_json_delta", partial_json: inputJson },
       }));
 
-      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 1 }));
 
       controller.enqueue(sse("message_delta", {
         type: "message_delta",
