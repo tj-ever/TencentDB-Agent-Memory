@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dump as yamlDump, load as yamlLoad } from "js-yaml";
 import { isAuthEnabled, verifyUserKey } from "../../auth.js";
-import type { AgentUpstreamEntry, ProxyConfig, UpstreamProfile, UserUpstreamEntry } from "../../types.js";
+import type { AgentIdUpstreamEntry, AgentUpstreamEntry, ProxyConfig, UpstreamProfile, UserUpstreamEntry } from "../../types.js";
 
 const mask = (value: string): string => value ? `${value.slice(0, 6)}…` : "";
 
@@ -55,6 +55,7 @@ function snapshot(config: ProxyConfig) {
       url: entry.url,
     })),
     userUpstreams: config.upstream.userUpstreams ?? [],
+    agentUpstreams: config.upstream.agentUpstreams ?? [],
   };
 }
 
@@ -150,6 +151,21 @@ export function userUpstreamList(changes: Array<{ userId?: unknown; url?: unknow
   return out;
 }
 
+/** 按 agent（agent_id）绑定全量替换：空值丢弃、agentId 去重，spaceId 保留。 */
+export function agentUpstreamList(changes: Array<{ agentId?: unknown; url?: unknown; spaceId?: unknown }>): AgentIdUpstreamEntry[] {
+  const out: AgentIdUpstreamEntry[] = [];
+  const seen = new Set<string>();
+  for (const change of changes) {
+    const agentId = typeof change?.agentId === "string" ? change.agentId.trim() : "";
+    const url = typeof change?.url === "string" ? change.url.trim() : "";
+    if (!agentId || !url || seen.has(agentId)) continue;
+    seen.add(agentId);
+    const spaceId = typeof change?.spaceId === "string" ? change.spaceId.trim() : "";
+    out.push({ agentId, url, ...(spaceId ? { spaceId } : {}) });
+  }
+  return out;
+}
+
 export function createUpstreamConfigHandlers(config: ProxyConfig) {
   return {
     get: async (c: Context): Promise<Response> => {
@@ -172,10 +188,12 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         profiles?: ProfileChange[];
         agents?: AgentChange[];
         userUpstreams?: Array<{ userId?: unknown; url?: unknown }>;
+        agentUpstreams?: Array<{ agentId?: unknown; url?: unknown; spaceId?: unknown }>;
       }>().catch(() => null);
-      // userUpstreams-only PUT 也放行（面板 API Keys 页只改按用户绑定，不动全局上游）。
+      // userUpstreams/agentUpstreams-only PUT 也放行（面板只改绑定表，不动全局上游）。
       if (!body
-        || (typeof body.url !== "string" || !body.url.trim()) && !Array.isArray(body.profiles) && !Array.isArray(body.userUpstreams)) {
+        || (typeof body.url !== "string" || !body.url.trim()) && !Array.isArray(body.profiles)
+        && !Array.isArray(body.userUpstreams) && !Array.isArray(body.agentUpstreams)) {
         return c.json({ error: "invalid url" }, 400);
       }
 
@@ -210,6 +228,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
           if (Array.isArray(body.agents)) nextUpstream.agents = agentMap(body.agents, config.upstream.agents);
           // 全量替换（不传 = 不动）：persist 直接 dump 整个 upstream 对象落盘。
           if (Array.isArray(body.userUpstreams)) nextUpstream.userUpstreams = userUpstreamList(body.userUpstreams);
+          if (Array.isArray(body.agentUpstreams)) nextUpstream.agentUpstreams = agentUpstreamList(body.agentUpstreams);
           persist(config, nextUpstream, profiles);
           config.upstream = nextUpstream;
           config.upstreamProfiles = profiles;
@@ -229,6 +248,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         }
         if (Array.isArray(body.agents)) next.agents = agentMap(body.agents, config.upstream.agents);
         if (Array.isArray(body.userUpstreams)) next.userUpstreams = userUpstreamList(body.userUpstreams);
+        if (Array.isArray(body.agentUpstreams)) next.agentUpstreams = agentUpstreamList(body.agentUpstreams);
         persist(config, next, null);
         config.upstream = next;
         return c.json(snapshot(config));

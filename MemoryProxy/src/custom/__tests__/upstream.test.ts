@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseUpstreamAgents, parseUserUpstreams, resolveUpstreamRoute, type EarlyAuthResult, type UpstreamRoute } from "../upstream.js";
+import { agentUpstreamList } from "../routes/upstream-config.js";
 import type { AgentUpstreamEntry, ProxyConfig } from "../../types.js";
 import type { VerifyUserResult } from "../../auth.js";
 
@@ -76,6 +77,22 @@ describe("parseUserUpstreams", () => {
       { userId: "usr-a", url: "https://dup.example.com/v1" },
     ] as NonNullable<Parameters<typeof parseUserUpstreams>[0]>);
     expect(out).toEqual([{ userId: "usr-a", url: "https://a.example.com/v1" }]);
+  });
+});
+
+describe("agentUpstreamList（upstream-config 绑定表校验）", () => {
+  it("空值丢弃、agentId 去重、spaceId 保留", () => {
+    const out = agentUpstreamList([
+      { agentId: "agt-x", url: "https://a.example.com/v1", spaceId: "s1" },
+      { agentId: "  ", url: "https://x.example.com/v1" },
+      { agentId: "agt-y", url: " " },
+      { agentId: "agt-x", url: "https://dup.example.com/v1" },
+      { agentId: "agt-z", url: "https://z.example.com/v1", spaceId: "  " },
+    ]);
+    expect(out).toEqual([
+      { agentId: "agt-x", url: "https://a.example.com/v1", spaceId: "s1" },
+      { agentId: "agt-z", url: "https://z.example.com/v1" },
+    ]);
   });
 });
 
