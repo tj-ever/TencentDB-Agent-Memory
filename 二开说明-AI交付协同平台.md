@@ -148,6 +148,16 @@ Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` �
 
 > 命中绑定的开发者流量：URL 一定落到开发者绑定的上游，模型 Key 透传开发者自己的（带 `x-tdai-user-key` 即触发透传）。bridge 机器人流量（不带该头）URL 落到绑定上游、但用全局 key 替换，防泄 sk-mem。无绑定回落到全局上游 + 全局 key（端点语义分流）。
 
+#### Agent 直连端点（/claude-code/\<agent-id>，2026-09）
+
+按用户绑定之上另一套并行机制：**按 agent 绑定**，在「团队管理 → Agents」页每行「绑定上游」。绑定后生成直连链接 `${proxy_base}/claude-code/<agent-id>`，开发者连上即直接命中该 agent、注入该 agent 关联记忆，**无需再跑 session-init 表单选 Team/Agent/Task**（不关联 task 也能注入——taskId 用虚拟默认任务 `defaultTaskId`，只注入 `[Agent]` 块）。
+
+- **绑定**：admin 在 agents 页打开绑定弹窗，填该 agent 的上游 URL（模型 Key 仍由开发者客户端自带，两把 key 分离不变）＋ 可选的租户实例 `spaceId`（单租户留空，默认 `default`）；url 留空保存＝解绑回落。
+- **运行时**（`earlyAuth()` 的 agent 直连分支）：路径第二段是 `agent_id`（不是 space），命中 `upstream.agentUpstreams` 绑定 → 用绑定租户验证记忆 key → 覆盖上游 URL（模型 Key 按是否带 `x-tdai-user-key` 透传，规则同按用户绑定）→ 用开发者的记忆身份 user_id 反解 agent→team（`MetadataClient.listTeams`→per-team `listAgents`）产出身份预设写回 `x-team-id`/`x-agent-id`/`x-task-id`。
+- **反解失败**（agent 不归该开发者可见 / 内核不可用）：不 401，回落官方表单流（上游已按绑定换好）。
+- **与按用户绑定的优先级**：同一请求先命 `userUpstreams`（按精确 userId），再命 `agentUpstreams`；两套都未命回落全局。
+- **持久化**：`GET/PUT /v3/config/upstream` 的 `agentUpstreams` 数组（全量替换），经 override 热生效。
+
 ### 运行期上游配置
 
 - `GET /v3/config/upstream`：需要有效的 `x-tdai-service-id` 和 `x-tdai-user-key`。
@@ -219,7 +229,7 @@ cp .env.example .env
 
 | 文件 | 改动内容 |
 | --- | --- |
-| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 调用 `custom/upstream.ts` 的 `earlyAuth()` 统一前置认证；价目表校验仅对未命中 agents 表的请求生效 |
+| `MemoryProxy/src/handler.ts`、`anthropicHandler.ts` | 调用 `custom/upstream.ts` 的 `earlyAuth()` 统一前置认证；lcHeaders 构建后应用 agent 直连预设（`x-team-id`/`x-agent-id`/`x-task-id`）；价目表校验仅对未命中 agents 表的请求生效 |
 | `MemoryProxy/src/server.ts` | 注册 `/v3/config/upstream` GET/PUT |
 | `MemoryProxy/src/session/index.ts` | Anthropic 协议一律走 claude-code 状态机 |
 | `MemoryProxy/src/types.ts` | Key 分离语义（agent 级只保留 url 字段） |
