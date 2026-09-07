@@ -120,7 +120,9 @@ Bridge 的运行数据包括：
 
 ### 上游路由
 
-Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.agents` 是开发者上游（BYOK）表：按 URL 前缀分流到开发者自己的端点，每个条目只有一个字段 `url`。
+Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.userUpstreams` 是按用户 BYOK 绑定表（2026-09 二开收敛后的开发者上游机制）：`[{userId, url}]`，在 `earlyAuth()` 校验 user key 拿到 `verify.userId` 后命中即覆盖上游 URL，优先级高于 `upstream.agents` 名字分流表（agents 表为官方遗留机制，线上已不使用）。绑定由管理员在面板「API Keys」页维护（每行「上游配置」，经 `/v3/config/upstream` 持久化到 override 并热生效），url 留空保存即解绑回落全局上游。
+
+**模型 Key 按端点语义分流（2026-09 排障修订，防 bridge 机器人把 sk-mem 泄给上游）**：`/claude-code` 等内置端点 = 官方腾讯 mem 流程，一律用全局 `upstream.apiKey` 替换（机器人 harness 拿 sk-mem 记忆 Key 当 AUTH_TOKEN 直连，透传会把 sk-mem 发给第三方上游）；仅自定义 agent 路径（命中 `upstream.agents` 表）透传客户端模型 Key（BYOK）。
 
 **Key 分离语义**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不配置/替换任何 agent 级 Key；记忆身份通过独立的 `x-tdai-user-key` 请求头携带（面板「成员管理」下发的 sk-mem-*）；价目表校验对命中 agent 的请求跳过（非 TokenHub 上游 CreditDelta=0，仅记 usage）。历史配置中的 agent 级 `apiKey`/`binding`/`memory`/`model`/`userAgent` 字段会被静默忽略。
 
@@ -135,6 +137,16 @@ Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` �
 内置 Agent：`claude-code`、`codebuddy`、`codex`、`cursor`、`hermes`、`openclaw`、`workbuddy`、`dsh`、`opencode`。内置 Agent 和已配置 Agent 使用第二段作为 `space_id`；自定义 Agent（例如 `fw1`）使用其配置的 URL，会话绑定复用自带 `sessionInit.headerAutoSelect`（`x-team-id`/`x-agent-id`/`x-task-id` 头）或 session-init 表单。
 
 前置认证（路由解析 → 记忆身份解析 → `verifyUserKey`）收敛在 `MemoryProxy/src/custom/upstream.ts` 的 `earlyAuth()` 门面中，`handler.ts` 与 `anthropicHandler.ts` 调用同一入口。
+
+#### 开发者接入（BYOK，2026-09 起唯一路径）
+
+开发者与官方腾讯 mem 流程完全一致，只是上游 URL 可换。三步接入：
+
+1. **平台发 key**：面板创建用户，拿到 `sk-mem-*` 记忆 Key（模型 Key 由开发者自带，在客户端 profile 里）；
+2. **管理员绑上游**：面板「API Keys」页点「新增上游绑定」，填该用户的 `user_id`（`usr-*`）＋ 上游 URL，保存即热生效（写 `upstream.userUpstreams`）；url 留空保存＝解绑回落全局默认上游；
+3. **开发者连官方端点**：Base URL 填 `/claude-code/<instance-id>`（同 API Keys 页展示的官方端点），模型 Key 填自己的提供方 Key。连上后 session-init 表单选 Team/Agent/Task，记忆注入 / 会话 / 计费复用内置管道，无额外配置。
+
+> 内置端点（`/claude-code/*` 等）按官方腾讯 mem 语义用全局 `upstream.apiKey`；自定义 agent 路径（`upstream.agents` 表）才透传客户端模型 Key。绑定 URL 主要用于让特定 `user_id` 的官方端点流量落到他自己的上游——此时要求该上游信任全局 key，或该用户走自定义 agent 路径自带 BYOK key。
 
 ### 运行期上游配置
 
