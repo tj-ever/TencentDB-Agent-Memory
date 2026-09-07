@@ -173,7 +173,9 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         agents?: AgentChange[];
         userUpstreams?: Array<{ userId?: unknown; url?: unknown }>;
       }>().catch(() => null);
-      if (!body || (typeof body.url !== "string" || !body.url.trim()) && !Array.isArray(body.profiles)) {
+      // userUpstreams-only PUT 也放行（面板 API Keys 页只改按用户绑定，不动全局上游）。
+      if (!body
+        || (typeof body.url !== "string" || !body.url.trim()) && !Array.isArray(body.profiles) && !Array.isArray(body.userUpstreams)) {
         return c.json({ error: "invalid url" }, 400);
       }
 
@@ -216,7 +218,8 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
 
         const next: ProxyConfig["upstream"] = {
           ...config.upstream,
-          url: (body.url as string).trim(),
+          // userUpstreams-only PUT 不带 url：保留当前值。
+          ...(typeof body.url === "string" && body.url.trim() ? { url: body.url.trim() } : {}),
           ...(typeof body.userAgent === "string" ? { userAgent: body.userAgent.trim() || undefined } : {}),
           ...(typeof body.model === "string" ? { model: body.model.trim() || undefined } : {}),
           ...(typeof body.supportsImages === "boolean" ? { supportsImages: body.supportsImages } : {}),
