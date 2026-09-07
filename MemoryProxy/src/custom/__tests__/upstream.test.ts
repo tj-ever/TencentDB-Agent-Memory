@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { parseUpstreamAgents, resolveUpstreamRoute, type UpstreamRoute } from "../upstream.js";
+import { describe, expect, it, vi } from "vitest";
+import { parseUpstreamAgents, parseUserUpstreams, resolveUpstreamRoute, type EarlyAuthResult, type UpstreamRoute } from "../upstream.js";
 import type { AgentUpstreamEntry, ProxyConfig } from "../../types.js";
+import type { VerifyUserResult } from "../../auth.js";
+
+// earlyAuth 内部调用内核 verify（网络）——按 userId mock 掉。
+vi.mock("../../auth.js", () => ({
+  verifyUserKey: vi.fn(async (_key: string, spaceId: string): Promise<VerifyUserResult> => ({
+    rejected: false,
+    userId: spaceId === "hit" ? "usr-a" : "usr-other",
+    userType: "user",
+  })),
+}));
+
+const { earlyAuth } = await import("../upstream.js");
 
 function route(entry: AgentUpstreamEntry | undefined, spaceInPath = "spc-path"): UpstreamRoute {
   const cfg = { upstream: { url: "https://default.example.com/v1", apiKey: "sk-global", agents: entry ? { fw1: entry } : {} } } as unknown as ProxyConfig;
@@ -52,5 +64,54 @@ describe("parseUpstreamAgents", () => {
 
   it("url 空白的条目丢弃", () => {
     expect(parseEntry({ url: "  " })).toBeUndefined();
+  });
+});
+
+describe("parseUserUpstreams", () => {
+  it("空值丢弃、userId 去重", () => {
+    const out = parseUserUpstreams([
+      { userId: "usr-a", url: "https://a.example.com/v1" },
+      { userId: "  ", url: "https://x.example.com/v1" },
+      { userId: "usr-b", url: " " },
+      { userId: "usr-a", url: "https://dup.example.com/v1" },
+    ] as NonNullable<Parameters<typeof parseUserUpstreams>[0]>);
+    expect(out).toEqual([{ userId: "usr-a", url: "https://a.example.com/v1" }]);
+  });
+});
+
+describe("earlyAuth 按用户绑定", () => {
+  const errors = {
+    unauthorized: (reason: string) => new Response(reason, { status: 401 }),
+    forbidden: () => new Response(null, { status: 403 }),
+  };
+  const req = (path: string) => ({ req: { path, header: () => undefined } });
+
+  it("命中 userId：entry 覆盖、apiKey 清空（透传客户端 Key）", async () => {
+    const cfg = {
+      upstream: {
+        url: "https://default.example.com/v1",
+        apiKey: "sk-global",
+        agents: {},
+        userUpstreams: [{ userId: "usr-a", url: "https://byok.example.com/v1" }],
+      },
+    } as unknown as ProxyConfig;
+    const r = await earlyAuth(req("/claude-code/hit"), cfg, "sk-model", errors) as EarlyAuthResult;
+    expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
+    expect(r.upstreamRoute.apiKey).toBe("");
+  });
+
+  it("未命中 userId：走全局兜底", async () => {
+    const cfg = {
+      upstream: {
+        url: "https://default.example.com/v1",
+        apiKey: "sk-global",
+        agents: {},
+        userUpstreams: [{ userId: "usr-a", url: "https://byok.example.com/v1" }],
+      },
+    } as unknown as ProxyConfig;
+    const r = await earlyAuth(req("/claude-code/miss"), cfg, "sk-model", errors) as EarlyAuthResult;
+    expect(r.upstreamRoute.entry).toBeUndefined();
+    expect(r.upstreamRoute.url).toBe("https://default.example.com/v1");
+    expect(r.upstreamRoute.apiKey).toBe("sk-global");
   });
 });

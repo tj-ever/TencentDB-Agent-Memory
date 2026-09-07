@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dump as yamlDump, load as yamlLoad } from "js-yaml";
 import { isAuthEnabled, verifyUserKey } from "../../auth.js";
-import type { AgentUpstreamEntry, ProxyConfig, UpstreamProfile } from "../../types.js";
+import type { AgentUpstreamEntry, ProxyConfig, UpstreamProfile, UserUpstreamEntry } from "../../types.js";
 
 const mask = (value: string): string => value ? `${value.slice(0, 6)}…` : "";
 
@@ -54,6 +54,7 @@ function snapshot(config: ProxyConfig) {
       name,
       url: entry.url,
     })),
+    userUpstreams: config.upstream.userUpstreams ?? [],
   };
 }
 
@@ -135,6 +136,20 @@ export function agentMap(changes: AgentChange[], _current: Record<string, AgentU
   return result;
 }
 
+/** 按用户 BYOK 绑定全量替换：空值丢弃、userId 去重。 */
+export function userUpstreamList(changes: Array<{ userId?: unknown; url?: unknown }>): UserUpstreamEntry[] {
+  const out: UserUpstreamEntry[] = [];
+  const seen = new Set<string>();
+  for (const change of changes) {
+    const userId = typeof change?.userId === "string" ? change.userId.trim() : "";
+    const url = typeof change?.url === "string" ? change.url.trim() : "";
+    if (!userId || !url || seen.has(userId)) continue;
+    seen.add(userId);
+    out.push({ userId, url });
+  }
+  return out;
+}
+
 export function createUpstreamConfigHandlers(config: ProxyConfig) {
   return {
     get: async (c: Context): Promise<Response> => {
@@ -156,6 +171,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
         supportsImages?: unknown;
         profiles?: ProfileChange[];
         agents?: AgentChange[];
+        userUpstreams?: Array<{ userId?: unknown; url?: unknown }>;
       }>().catch(() => null);
       if (!body || (typeof body.url !== "string" || !body.url.trim()) && !Array.isArray(body.profiles)) {
         return c.json({ error: "invalid url" }, 400);
@@ -190,6 +206,8 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
             supportsImages: applied.upstreamPatch.supportsImages,
           };
           if (Array.isArray(body.agents)) nextUpstream.agents = agentMap(body.agents, config.upstream.agents);
+          // 全量替换（不传 = 不动）：persist 直接 dump 整个 upstream 对象落盘。
+          if (Array.isArray(body.userUpstreams)) nextUpstream.userUpstreams = userUpstreamList(body.userUpstreams);
           persist(config, nextUpstream, profiles);
           config.upstream = nextUpstream;
           config.upstreamProfiles = profiles;
@@ -207,6 +225,7 @@ export function createUpstreamConfigHandlers(config: ProxyConfig) {
           next.apiKey = body.apiKey.trim();
         }
         if (Array.isArray(body.agents)) next.agents = agentMap(body.agents, config.upstream.agents);
+        if (Array.isArray(body.userUpstreams)) next.userUpstreams = userUpstreamList(body.userUpstreams);
         persist(config, next, null);
         config.upstream = next;
         return c.json(snapshot(config));

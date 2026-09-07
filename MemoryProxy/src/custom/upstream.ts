@@ -1,4 +1,4 @@
-import type { AgentUpstreamEntry, ProxyConfig, RawYamlConfig } from "../types.js";
+import type { AgentUpstreamEntry, ProxyConfig, RawYamlConfig, UserUpstreamEntry } from "../types.js";
 import { verifyUserKey } from "../auth.js";
 import type { VerifyUserResult } from "../auth.js";
 
@@ -56,6 +56,22 @@ export function parseUpstreamAgents(
   return agents;
 }
 
+/** 将 YAML 中的按用户绑定收敛为运行时契约：userId 去重、空值丢弃。 */
+export function parseUserUpstreams(
+  raw: NonNullable<RawYamlConfig["upstream"]>["userUpstreams"],
+): UserUpstreamEntry[] {
+  const out: UserUpstreamEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw ?? []) {
+    const userId = entry?.userId?.trim();
+    const url = entry?.url?.trim();
+    if (!userId || !url || seen.has(userId)) continue;
+    seen.add(userId);
+    out.push({ userId, url });
+  }
+  return out;
+}
+
 export interface EarlyAuthResult {
   upstreamRoute: UpstreamRoute;
   pathSpaceId: string;
@@ -86,6 +102,12 @@ export async function earlyAuth(
   const verify = await verifyUserKey(memoryKey, spaceId);
   if (verify.rejected) {
     return errors.unauthorized(`Authentication failed: ${verify.rejectReason ?? "unknown"}`);
+  }
+  // 按用户 BYOK 绑定优先于路径 agents 表：命中即覆盖上游并透传客户端模型 Key。
+  const perUser = config.upstream.userUpstreams?.find((u) => u.userId === verify.userId);
+  if (perUser) {
+    upstreamRoute.entry = { url: perUser.url };
+    upstreamRoute.apiKey = "";
   }
   return {
     upstreamRoute,

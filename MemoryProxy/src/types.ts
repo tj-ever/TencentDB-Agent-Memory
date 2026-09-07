@@ -395,6 +395,14 @@ export interface AgentUpstreamEntry {
   url: string;
 }
 
+/** 按用户（内核 user_id）的上游绑定。See `ProxyConfig.upstream.userUpstreams`. */
+export interface UserUpstreamEntry {
+  /** 内核 auth/verify 返回的 user_id（如 `usr-xxxxxxxx`）。 */
+  userId: string;
+  /** 该用户的模型上游 base URL；模型 Key 始终客户端自带透传。 */
+  url: string;
+}
+
 /**
  * 可切换的全局上游 profile（面板「Proxy 上游」表格的行）。
  * `upstream` 始终等于 enabled 的那条 profile —— profiles 只是存储形态，
@@ -445,6 +453,12 @@ export interface ProxyConfig {
      * `upstream.apiKey` fallback — the caller must bring their own model key.
      */
     agents: Record<string, AgentUpstreamEntry>;
+    /**
+     * 按用户（user_id）的上游绑定——BYOK 收敛后的主路径（agents 名字分流已退役）。
+     * earlyAuth verify 拿到 user_id 后命中即覆盖 upstreamRoute（url 换绑定值、
+     * apiKey 清空透传客户端 Key）。未命中的用户走全局 upstream.url。
+     */
+    userUpstreams?: Array<UserUpstreamEntry>;
   };
   log: {
     file: string;    // JSONL path; empty string disables file logging
@@ -750,6 +764,8 @@ export interface RawYamlConfig {
     supportsImages?: boolean;
     /** Per-agent override map. See `AgentUpstreamEntry`. */
     agents?: Record<string, { url?: string } | null | undefined>;
+    /** 按用户（user_id）的上游绑定。See `UserUpstreamEntry`. */
+    userUpstreams?: Array<{ userId?: string; url?: string }>;
   };
   /** 可切换的全局上游 profile 列表。See `UpstreamProfile`. */
   upstreamProfiles?: Array<{

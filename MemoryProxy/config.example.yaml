@@ -75,6 +75,14 @@ upstream:
     # 在内核拉取对应的 team/agent/task 上下文（不需要手动创建资源）。
     # 用户资产（Team / Agent / Task / 用户授权）请在 MemoryPanel Web 面板里创建。
 
+  # ── 按用户 BYOK 绑定（推荐，开发者统一走官方端点 /claude-code/<spaceId>） ──────
+  # 与按名字分流的 agents 表不同：所有开发者连同一个官方端点，默认走全局上游；
+  # 仅命中 userId 的请求覆盖为该用户自己的上游。模型 Key 一律客户端自带透传。
+  # user_id 可在面板 API Keys 页查看，也可由管理员在面板上直接维护此绑定。
+  # userUpstreams:
+  #   - userId: usr-xxxxxxxx            # 内核 auth/verify 返回的 user_id
+  #     url: "https://developer-upstream.example.com/v1"
+
 
 # ──── 多客户端接入（workbuddy / codebuddy / claude-code 等） ───────────────────
 # MemoryProxy 不管理用户资产。Team / Agent / Task / 用户授权均在 MemoryPanel Web
