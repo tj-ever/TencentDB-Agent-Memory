@@ -562,7 +562,7 @@ export async function handleAnthropicMessages(
     forbidden: () => c.json({ type: "error", error: { type: "permission_error", message: "Agent upstream access denied" } }, 403),
   });
   if (auth instanceof Response) return auth;
-  const { upstreamRoute, memoryKey: earlyMemoryKey, spaceId: earlySpaceId, verify: earlyVerify } = auth;
+  const { upstreamRoute, memoryKey: earlyMemoryKey, spaceId: earlySpaceId, verify: earlyVerify, agentPreset } = auth;
 
   // ── Parse body ──────────────────────────────────────────────────────────
   // Body is parsed BEFORE the systemUser short-circuit so the alias-gate and
@@ -661,6 +661,15 @@ export async function handleAnthropicMessages(
   const lcHeaders: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
     lcHeaders[k.toLowerCase()] = v;
+  }
+
+  // ── agent 直连预设：/claude-code/<agent-id> 命中绑定后由 earlyAuth 反解出
+  // (teamId, agentId, taskId=defaultTaskId)，合并进身份头让官方
+  // headerAutoSelect → direct-register 原生注入该 agent 记忆（无真实 task 也注入）。
+  if (agentPreset) {
+    lcHeaders["x-team-id"] = agentPreset.teamId;
+    lcHeaders["x-agent-id"] = agentPreset.agentId;
+    lcHeaders["x-task-id"] = agentPreset.taskId ?? config.sessionInit?.defaultTaskId ?? "default";
   }
 
 // ── Session key: prefer conversation header, fallback to agent profile ───────────
