@@ -103,11 +103,14 @@ export async function earlyAuth(
   if (verify.rejected) {
     return errors.unauthorized(`Authentication failed: ${verify.rejectReason ?? "unknown"}`);
   }
-  // 按用户 BYOK 绑定优先于路径 agents 表：命中即覆盖上游并透传客户端模型 Key。
+  // 按用户 BYOK 绑定优先于路径 agents 表：命中即覆盖上游。
+  // 模型 Key 按端点语义分流：/claude-code 等内置端点 = 官方腾讯 mem 流程，
+  // 一律用全局 upstream.apiKey（bridge 机器人 harness 拿 sk-mem 当 AUTH_TOKEN，
+  // 透传会把 sk-mem 泄给上游）；仅自定义 agent 路径透传客户端模型 Key（BYOK）。
   const perUser = config.upstream.userUpstreams?.find((u) => u.userId === verify.userId);
   if (perUser) {
     upstreamRoute.entry = { url: perUser.url };
-    upstreamRoute.apiKey = "";
+    upstreamRoute.apiKey = isBuiltinAgent(upstreamRoute.agentSource) ? config.upstream.apiKey : "";
   }
   return {
     upstreamRoute,
