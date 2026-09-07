@@ -25,6 +25,15 @@ export interface ProxyUserUpstream {
   url: string;
 }
 
+export interface ProxyAgentUpstream {
+  /** 内核 agent_id（如 agt-xxxxxxxx）。 */
+  agentId: string;
+  /** 该 agent 的模型上游 base URL；模型 Key 始终客户端自带透传。 */
+  url: string;
+  /** agent 所在租户实例（service id），默认 default，单租户可留空。 */
+  spaceId?: string;
+}
+
 export interface ProxyConfigState {
   url: string;
   apiKey: string;
@@ -34,6 +43,7 @@ export interface ProxyConfigState {
   profiles: ProxyProfile[];
   agents: ProxyAgentConfig[];
   userUpstreams?: ProxyUserUpstream[];
+  agentUpstreams?: ProxyAgentUpstream[];
   publicUrl?: string;
 }
 
@@ -49,6 +59,8 @@ export interface ProxyConfigInput {
   }>;
   /** 按用户 BYOK 绑定，全量替换（不传 = 不动）。 */
   userUpstreams?: ProxyUserUpstream[];
+  /** 按 agent 绑定，全量替换（不传 = 不动）。 */
+  agentUpstreams?: ProxyAgentUpstream[];
 }
 
 export const proxyConfigApi = {

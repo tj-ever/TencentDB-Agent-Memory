@@ -25,7 +25,7 @@
  */
 
 import { useState, useMemo } from 'react';
-import { Button } from 'tea-component';
+import { Button, Copy, Form, Input, Modal } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { UsergroupIcon, AddIcon } from 'tea-icons-react';
 import {
@@ -42,6 +42,9 @@ import { knowledgeApi } from '@/lib/api/knowledge-api';
 import { useDisplayNameResolver } from '@/services/user-profile-store';
 import { tea } from '@/lib/tea-bridge';
 import { getErrorMessage } from '@/lib/error-message';
+import { proxyConfigApi } from '@/custom/api/proxy-config';
+import { metaInstancesApi } from '@/lib/teamApi';
+import { getPanelSession } from '@/lib/panelSession';
 import './team-management-panel.css';
 
 import { MAX_IMPORTED_CHAT_MEMORIES, importedChatMemoryIds, type AgentCard } from './types';
@@ -105,6 +108,13 @@ export default function TeamManagementPanel({
     userId: string;
     keyValue: string;
   } | null>(null);
+  // 按 agent 绑定上游（agent 直连端点）
+  const [bindingAgent, setBindingAgent] = useState<StoreAgent | null>(null);
+  const [bindingUrl, setBindingUrl] = useState('');
+  const [bindingSpaceId, setBindingSpaceId] = useState('');
+  const [savingUpstream, setSavingUpstream] = useState(false);
+  /** 生成的直连链接 base（proxy_endpoint；未取到时回落 host:8096），'' = 未解析。 */
+  const [upstreamLinkBase, setUpstreamLinkBase] = useState('');
 
   async function handleCreateAgent(card: Omit<AgentCard, 'id' | 'icon' | 'accent'>) {
     if (!activeTeamId || !activeTeam) return;
@@ -213,6 +223,65 @@ export default function TeamManagementPanel({
     setShowCreateTeam(false);
   }
 
+  /** 打开按 agent 绑定弹窗：回显当前绑定 url，并解析直连链接 base。 */
+  async function handleOpenUpstream(agent: StoreAgent) {
+    setBindingAgent(agent);
+    setBindingUrl('');
+    setBindingSpaceId('');
+    setSavingUpstream(false);
+    try {
+      const state = await proxyConfigApi.get();
+      const hit = (state.agentUpstreams ?? []).find((u) => u.agentId === agent.agent_id);
+      setBindingUrl(hit?.url ?? '');
+      setBindingSpaceId(hit?.spaceId ?? '');
+    } catch (e) {
+      tea.notify.error(e);
+      setBindingAgent(null);
+      return;
+    }
+    if (!upstreamLinkBase) {
+      const fallback = `${window.location.protocol}//${window.location.hostname}:8096`;
+      try {
+        const instances = await metaInstancesApi.list();
+        const session = getPanelSession();
+        const current = instances.find((i) => i.instance_id === session?.instanceId)
+          ?? instances.find((i) => i.instance_id === 'default')
+          ?? instances[0];
+        setUpstreamLinkBase((current?.proxy_endpoint || fallback).replace(/\/$/, ''));
+      } catch {
+        setUpstreamLinkBase(fallback);
+      }
+    }
+  }
+
+  /** 保存按 agent 绑定：url 空 = 解绑（回落全局默认上游）。 */
+  async function handleSaveUpstream() {
+    if (!bindingAgent) return;
+    const agentId = bindingAgent.agent_id;
+    const url = bindingUrl.trim();
+    if (url) {
+      try {
+        new URL(url);
+      } catch {
+        tea.notify.error(t('agentUpstream.url.invalid'));
+        return;
+      }
+    }
+    setSavingUpstream(true);
+    try {
+      const state = await proxyConfigApi.get();
+      const list = (state.agentUpstreams ?? []).filter((u) => u.agentId !== agentId);
+      if (url) list.push({ agentId, url, spaceId: bindingSpaceId.trim() || undefined });
+      await proxyConfigApi.update({ url: state.url, agentUpstreams: list });
+      setBindingAgent(null);
+      tea.notify.success(t('agentUpstream.saved'));
+    } catch (e) {
+      tea.notify.error(e);
+    } finally {
+      setSavingUpstream(false);
+    }
+  }
+
   return (
     <div className="_memory-team-mgmt">
       {/* === Header: 当前 team 概览 + ops ===
@@ -310,6 +379,7 @@ export default function TeamManagementPanel({
               onCreateAgent={() => setShowCreateAgent(true)}
               onEditAgent={setEditingAgent}
               onDeleteAgent={handleDeleteAgent}
+              onBindUpstream={handleOpenUpstream}
             />
           )}
         </>
@@ -352,6 +422,61 @@ export default function TeamManagementPanel({
           agent={editingAgent}
           onClose={() => setEditingAgent(null)}
         />
+      )}
+
+      {/* === 按 agent 绑定上游（agent 直连端点，仅全局 admin 入口）=== */}
+      {bindingAgent && (
+        <Modal
+          visible
+          caption={t('agentUpstream.caption')}
+          size="s"
+          onClose={() => setBindingAgent(null)}
+          disableEscape={savingUpstream}
+        >
+          <Modal.Body>
+            <p className="_memory-agent-upstream-agent-name">
+              {bindingAgent.name} · {bindingAgent.agent_id}
+            </p>
+            <Form>
+              <Form.Item label={t('agentUpstream.url')} extra={t('agentUpstream.url.extra')}>
+                <Input
+                  value={bindingUrl}
+                  onChange={setBindingUrl}
+                  placeholder="https://your-upstream.example.com/v1"
+                />
+              </Form.Item>
+              <Form.Item label={t('agentUpstream.spaceId')} extra={t('agentUpstream.spaceId.extra')}>
+                <Input
+                  value={bindingSpaceId}
+                  onChange={setBindingSpaceId}
+                  placeholder="default"
+                />
+              </Form.Item>
+            </Form>
+            {upstreamLinkBase && (
+              <div className="_memory-agent-upstream-link">
+                <span>{t('agentUpstream.link')}</span>
+                <code>
+                  {`${upstreamLinkBase}/claude-code/${bindingAgent.agent_id}`}
+                </code>
+                <Copy text={`${upstreamLinkBase}/claude-code/${bindingAgent.agent_id}`} />
+              </div>
+            )}
+          </Modal.Body>
+          <Modal.Footer>
+            <Button
+              type="primary"
+              onClick={() => void handleSaveUpstream()}
+              disabled={savingUpstream}
+              loading={savingUpstream}
+            >
+              {t('agentUpstream.save')}
+            </Button>
+            <Button onClick={() => setBindingAgent(null)} disabled={savingUpstream}>
+              {t('common.cancel')}
+            </Button>
+          </Modal.Footer>
+        </Modal>
       )}
     </div>
   );

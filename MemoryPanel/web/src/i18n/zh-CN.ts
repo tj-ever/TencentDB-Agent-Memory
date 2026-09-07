@@ -928,6 +928,19 @@ export const zhCN = {
   'agentGrid.table.actions': '操作',
   'agentGrid.table.delete': '删除',
   'agentGrid.owner.you': '（你）',
+  'agentGrid.card.upstream': '绑定上游',
+  'agentGrid.card.upstream.tooltip': '为该 Agent 绑定模型上游并生成直连链接（admin）',
+
+  // ===== Agent 直连上游绑定（agent 直连端点 /claude-code/<agent-id>）=====
+  'agentUpstream.caption': '按 Agent 绑定上游（直连）',
+  'agentUpstream.url': '上游地址',
+  'agentUpstream.url.extra': '模型 Key 由开发者客户端自带透传；留空保存 = 解绑，恢复默认上游',
+  'agentUpstream.url.invalid': '上游地址格式无效',
+  'agentUpstream.spaceId': '租户实例 ID',
+  'agentUpstream.spaceId.extra': 'agent 所在租户实例（service id），单租户留空即可（默认 default）',
+  'agentUpstream.link': '直连链接（开发者 Base URL）：',
+  'agentUpstream.save': '保存',
+  'agentUpstream.saved': '已保存，绑定热生效',
 
   // ===== DefaultAgentTemplate（默认 Agent 模板，仅 admin 可见）=====
   'defaultAgent.title': '默认 Agent 模板',

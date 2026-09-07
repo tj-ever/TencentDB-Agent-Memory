@@ -50,11 +50,12 @@ export default function AgentGrid({
   countsLoading,
   mountedCounts,
   currentUser,
-  isAdmin: _isAdmin,
+  isAdmin,
   canSeeAllAgents,
   onCreateAgent,
   onEditAgent,
   onDeleteAgent,
+  onBindUpstream,
 }: {
   activeTeam: Team;
   agents: StoreAgent[];
@@ -63,13 +64,15 @@ export default function AgentGrid({
   countsLoading: boolean;
   mountedCounts: Record<string, AgentMountedCounts>;
   currentUser: string;
-  /** 保留接口兼容；admin 不再有特殊权限。 */
+  /** 全局 admin 才有「绑定上游」入口（proxy-config PUT 服务端强制 system_admin）。 */
   isAdmin: boolean;
   /** 是否有权限看到 team 内全部 agent（admin / team admin）。普通用户只能看到自己的，无需 Owner 筛选。 */
   canSeeAllAgents: boolean;
   onCreateAgent: () => void;
   onEditAgent: (agent: StoreAgent) => void;
   onDeleteAgent: (agent: StoreAgent) => void;
+  /** 按 agent 绑定上游（agent 直连端点）：打开绑定弹窗（仅全局 admin 可见入口）。 */
+  onBindUpstream: (agent: StoreAgent) => void;
 }) {
   const { t } = useTranslation();
   const [keyword, setKeyword] = useState('');
@@ -293,6 +296,11 @@ export default function AgentGrid({
                 {/* 资产计数区：counts 还在加载时只把 4 个数字换成小骨架占位，主体立刻可见 */}
                 {renderAssets(agent, countsLoading)}
                 <div className="_memory-agents-card-actions">
+                  {isAdmin && (
+                    <Button type="text" onClick={() => onBindUpstream(agent)} title={t('agentGrid.card.upstream.tooltip')}>
+                      {t('agentGrid.card.upstream')}
+                    </Button>
+                  )}
                   <Button
                     type="text"
                     disabled={!editable}
@@ -348,14 +356,21 @@ export default function AgentGrid({
             {
               key: 'actions',
               header: t('agentGrid.table.actions'),
-              width: 90,
+              width: 150,
               fixed: 'right',
               render: (agent: StoreAgent) => {
                 const editable = canEdit(agent);
                 return (
-                  <Button type="link" disabled={!editable} onClick={() => onDeleteAgent(agent)}>
-                    {t('agentGrid.table.delete')}
-                  </Button>
+                  <>
+                    {isAdmin && (
+                      <Button type="link" onClick={() => onBindUpstream(agent)}>
+                        {t('agentGrid.card.upstream')}
+                      </Button>
+                    )}
+                    <Button type="link" disabled={!editable} onClick={() => onDeleteAgent(agent)}>
+                      {t('agentGrid.table.delete')}
+                    </Button>
+                  </>
                 );
               },
             },

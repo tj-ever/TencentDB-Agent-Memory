@@ -952,6 +952,19 @@ export const enUS = {
   'agentGrid.table.actions': 'Actions',
   'agentGrid.table.delete': 'Delete',
   'agentGrid.owner.you': ' (you)',
+  'agentGrid.card.upstream': 'Bind Upstream',
+  'agentGrid.card.upstream.tooltip': 'Bind a model upstream to this Agent and generate a direct link (admin)',
+
+  // ===== Agent direct-connect upstream binding (/claude-code/<agent-id>) =====
+  'agentUpstream.caption': 'Per-Agent Upstream Binding (Direct Connect)',
+  'agentUpstream.url': 'Upstream URL',
+  'agentUpstream.url.extra': 'Model keys are passed through from the developer client; save empty to unbind and fall back to the default upstream',
+  'agentUpstream.url.invalid': 'Invalid upstream URL',
+  'agentUpstream.spaceId': 'Tenant Instance ID',
+  'agentUpstream.spaceId.extra': 'Service id of the agent tenant instance; leave empty for single-tenant (default)',
+  'agentUpstream.link': 'Direct link (developer Base URL): ',
+  'agentUpstream.save': 'Save',
+  'agentUpstream.saved': 'Saved — binding is live',
 
   // ===== DefaultAgentTemplate (admin only) =====
   'defaultAgent.title': 'Default Agent Template',
