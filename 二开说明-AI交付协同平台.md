@@ -122,7 +122,7 @@ Bridge 的运行数据包括：
 
 Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` 和 `upstream.supportsImages` 定义。`upstream.userUpstreams` 是按用户 BYOK 绑定表（2026-09 二开收敛后的开发者上游机制）：`[{userId, url}]`，在 `earlyAuth()` 校验 user key 拿到 `verify.userId` 后命中即覆盖上游 URL，优先级高于 `upstream.agents` 名字分流表（agents 表为官方遗留机制，线上已不使用）。绑定由管理员在面板「API Keys」页维护（每行「上游配置」，经 `/v3/config/upstream` 持久化到 override 并热生效），url 留空保存即解绑回落全局上游。
 
-**模型 Key 按端点语义分流（2026-09 排障修订，防 bridge 机器人把 sk-mem 泄给上游）**：`/claude-code` 等内置端点 = 官方腾讯 mem 流程，一律用全局 `upstream.apiKey` 替换（机器人 harness 拿 sk-mem 记忆 Key 当 AUTH_TOKEN 直连，透传会把 sk-mem 发给第三方上游）；仅自定义 agent 路径（命中 `upstream.agents` 表）透传客户端模型 Key（BYOK）。
+**模型 Key 按「是否显式携带记忆身份」分流（2026-09 排障修订，防 bridge 机器人把 sk-mem 泄给上游、同时让开发者用自己的模型 Key）**：命中绑定后，看请求是否带 `x-tdai-user-key` 记忆身份头——**带**（开发者，profile 里两把 key 分离，为过记忆鉴权必然带这个头）→ 透传客户端的模型 Key（BYOK，url 用绑定里的、模型 token 用开发者自己的，两者都不是平台的）；**不带**（bridge 机器人 harness 拿 sk-mem 记忆 Key 当 AUTH_TOKEN 直连）→ 用全局 `upstream.apiKey` 替换，否则透传会把 sk-mem 泄给第三方上游。未命中绑定时仍按端点语义：内置端点用全局 key，自定义 agent 路径透传客户端 Key。
 
 **Key 分离语义**：命中 agent 配置时，模型 Key 一律由调用方透传，proxy 不配置/替换任何 agent 级 Key；记忆身份通过独立的 `x-tdai-user-key` 请求头携带（面板「成员管理」下发的 sk-mem-*）；价目表校验对命中 agent 的请求跳过（非 TokenHub 上游 CreditDelta=0，仅记 usage）。历史配置中的 agent 级 `apiKey`/`binding`/`memory`/`model`/`userAgent` 字段会被静默忽略。
 
@@ -146,7 +146,7 @@ Proxy 的全局上游由 `upstream.url`、`upstream.apiKey`、`upstream.model` �
 2. **管理员绑上游**：面板「API Keys」页点「新增上游绑定」，填该用户的 `user_id`（`usr-*`）＋ 上游 URL，保存即热生效（写 `upstream.userUpstreams`）；url 留空保存＝解绑回落全局默认上游；
 3. **开发者连官方端点**：Base URL 填 `/claude-code/<instance-id>`（同 API Keys 页展示的官方端点），模型 Key 填自己的提供方 Key。连上后 session-init 表单选 Team/Agent/Task，记忆注入 / 会话 / 计费复用内置管道，无额外配置。
 
-> 内置端点（`/claude-code/*` 等）按官方腾讯 mem 语义用全局 `upstream.apiKey`；自定义 agent 路径（`upstream.agents` 表）才透传客户端模型 Key。绑定 URL 主要用于让特定 `user_id` 的官方端点流量落到他自己的上游——此时要求该上游信任全局 key，或该用户走自定义 agent 路径自带 BYOK key。
+> 命中绑定的开发者流量：URL 一定落到开发者绑定的上游，模型 Key 透传开发者自己的（带 `x-tdai-user-key` 即触发透传）。bridge 机器人流量（不带该头）URL 落到绑定上游、但用全局 key 替换，防泄 sk-mem。无绑定回落到全局上游 + 全局 key（端点语义分流）。
 
 ### 运行期上游配置
 
