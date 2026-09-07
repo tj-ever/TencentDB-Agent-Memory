@@ -30,6 +30,7 @@ import {
   Copy,
   Text,
   DatePicker,
+  Input,
   Justify,
   H3,
   Form,
@@ -37,6 +38,7 @@ import {
 } from 'tea-component';
 import { AddIcon } from 'tea-icons-react';
 import { userKeysApi, metaInstancesApi, type UserKey } from '@/lib/teamApi';
+import { proxyConfigApi, type ProxyUserUpstream } from '@/custom/api/proxy-config';
 import { useCurrentRole } from '@/services/useCurrentRole';
 import { useAuthStore } from '@/stores/auth';
 import { tea } from '@/lib/tea-bridge';
@@ -54,6 +56,20 @@ export default function ApiKeyPanel() {
   // 优先取 proxy_endpoint —— 开源本地部署 core+proxy 分开时客户端要接的是 proxy；
   // 未配置时回落 gateway_endpoint，等同老行为（线上 gateway 前置 proxy，两者合一）。
   const [clientBaseUrl, setClientBaseUrl] = useState<string | null>(null);
+  // ── 按用户 BYOK 上游绑定（admin-only） ──
+  // admin 在 API Keys 页直接把某个 user_id 绑到自定义上游；空 url = 解绑走默认。
+  // 普通成员看不到该列（GET/PUT /proxy-config 均为 system_admin-only）。
+  const [userUpstreams, setUserUpstreams] = useState<ProxyUserUpstream[]>([]);
+  const [binding, setBinding] = useState<{ userId: string; url: string } | null>(null);
+  const [savingBinding, setSavingBinding] = useState(false);
+
+  useEffect(() => {
+    if (role !== 'admin') return;
+    void proxyConfigApi
+      .get()
+      .then((s) => setUserUpstreams(s.userUpstreams ?? []))
+      .catch(() => setUserUpstreams([]));
+  }, [role]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,6 +154,35 @@ export default function ApiKeyPanel() {
     }
   }
 
+  /** 保存按用户绑定：url 空 = 解绑（走全局默认上游）。 */
+  async function handleSaveBinding() {
+    if (!binding) return;
+    const userId = binding.userId.trim();
+    const url = binding.url.trim();
+    if (!userId) return;
+    if (url) {
+      try {
+        new URL(url);
+      } catch {
+        tea.notify.error(t('apiKey.upstream.url.invalid'));
+        return;
+      }
+    }
+    setSavingBinding(true);
+    try {
+      const state = await proxyConfigApi.get();
+      const list = (state.userUpstreams ?? []).filter((u) => u.userId !== userId);
+      if (url) list.push({ userId, url });
+      const next = await proxyConfigApi.update({ url: state.url, userUpstreams: list });
+      setUserUpstreams(next.userUpstreams ?? []);
+      setBinding(null);
+    } catch (e) {
+      tea.notify.error(e);
+    } finally {
+      setSavingBinding(false);
+    }
+  }
+
   const formatTime = (iso?: string) => {
     if (!iso) return '—';
     const d = new Date(iso);
@@ -178,7 +223,15 @@ export default function ApiKeyPanel() {
           </div>
         }
         right={
-          role !== 'admin' ? (
+          role === 'admin' ? (
+            // admin 不在此页创建自己的 key（走系统初始化），改放「新增绑定」入口：
+            // 可为任意 user_id（含看不到 key 的其他开发者）配置 BYOK 上游。
+            <Button
+              onClick={() => setBinding({ userId: '', url: '' })}
+            >
+              {t('apiKey.upstream.add')}
+            </Button>
+          ) : (
             <Button
               type="primary"
               onClick={() => {
@@ -190,7 +243,7 @@ export default function ApiKeyPanel() {
               <AddIcon size={14} />
               {t('apiKey.create')}
             </Button>
-          ) : null
+          )
         }
       />
 
@@ -248,6 +301,40 @@ export default function ApiKeyPanel() {
                 );
               },
             },
+            ...(role === 'admin'
+              ? [
+                  {
+                    key: 'upstream',
+                    header: t('apiKey.upstream.col'),
+                    width: 220,
+                    render: (key: UserKey) => {
+                      const hit = userUpstreams.find((u) => u.userId === key.user_id);
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+                          <Text
+                            theme={hit ? 'success' : 'weak'}
+                            style={{
+                              fontSize: 12,
+                              maxWidth: 140,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {hit ? hit.url : t('apiKey.upstream.default')}
+                          </Text>
+                          <Button
+                            type="text"
+                            onClick={() => setBinding({ userId: key.user_id ?? '', url: hit?.url ?? '' })}
+                          >
+                            {t('apiKey.upstream.edit')}
+                          </Button>
+                        </div>
+                      );
+                    },
+                  },
+                ]
+              : []),
             {
               key: 'actions',
               header: t('apiKey.table.actions'),
@@ -392,6 +479,49 @@ export default function ApiKeyPanel() {
               {t('apiKey.create.submit')}
             </Button>
             <Button onClick={() => setShowCreate(false)} disabled={creating}>
+              {t('apiKey.create.cancel')}
+            </Button>
+          </Modal.Footer>
+        </Modal>
+      )}
+
+      {/* ===== 上游绑定弹窗（admin-only）：url 留空 = 解绑走全局默认 ===== */}
+      {binding && (
+        <Modal
+          visible
+          caption={t('apiKey.upstream.caption')}
+          size="s"
+          onClose={() => setBinding(null)}
+          disableEscape={savingBinding}
+        >
+          <Modal.Body>
+            <Form>
+              <Form.Item label={t('apiKey.upstream.userId')} extra={t('apiKey.upstream.userId.extra')}>
+                <Input
+                  value={binding.userId}
+                  onChange={(v) => setBinding({ ...binding, userId: v })}
+                  placeholder="usr-xxxxxxxx"
+                />
+              </Form.Item>
+              <Form.Item label={t('apiKey.upstream.url')} extra={t('apiKey.upstream.url.extra')}>
+                <Input
+                  value={binding.url}
+                  onChange={(v) => setBinding({ ...binding, url: v })}
+                  placeholder="https://your-upstream.example.com/v1"
+                />
+              </Form.Item>
+            </Form>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button
+              type="primary"
+              onClick={() => void handleSaveBinding()}
+              disabled={savingBinding || !binding.userId.trim()}
+              loading={savingBinding}
+            >
+              {t('apiKey.upstream.save')}
+            </Button>
+            <Button onClick={() => setBinding(null)} disabled={savingBinding}>
               {t('apiKey.create.cancel')}
             </Button>
           </Modal.Footer>

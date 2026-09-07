@@ -18,6 +18,13 @@ export interface ProxyProfile {
   enabled: boolean;
 }
 
+export interface ProxyUserUpstream {
+  /** 内核 auth/verify 返回的 user_id（如 usr-xxxxxxxx）。 */
+  userId: string;
+  /** 该用户的模型上游 base URL；模型 Key 始终客户端自带透传。 */
+  url: string;
+}
+
 export interface ProxyConfigState {
   url: string;
   apiKey: string;
@@ -26,6 +33,7 @@ export interface ProxyConfigState {
   supportsImages: boolean;
   profiles: ProxyProfile[];
   agents: ProxyAgentConfig[];
+  userUpstreams?: ProxyUserUpstream[];
   publicUrl?: string;
 }
 
@@ -39,6 +47,8 @@ export interface ProxyConfigInput {
   agents?: Array<Pick<ProxyAgentConfig, 'name' | 'url'> & {
     originalName?: string;
   }>;
+  /** 按用户 BYOK 绑定，全量替换（不传 = 不动）。 */
+  userUpstreams?: ProxyUserUpstream[];
 }
 
 export const proxyConfigApi = {
