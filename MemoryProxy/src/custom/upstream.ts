@@ -103,14 +103,16 @@ export async function earlyAuth(
   if (verify.rejected) {
     return errors.unauthorized(`Authentication failed: ${verify.rejectReason ?? "unknown"}`);
   }
-  // 按用户 BYOK 绑定优先于路径 agents 表：命中即覆盖上游。
-  // 模型 Key 按端点语义分流：/claude-code 等内置端点 = 官方腾讯 mem 流程，
-  // 一律用全局 upstream.apiKey（bridge 机器人 harness 拿 sk-mem 当 AUTH_TOKEN，
-  // 透传会把 sk-mem 泄给上游）；仅自定义 agent 路径透传客户端模型 Key（BYOK）。
+  // 按用户 BYOK 绑定优先于路径 agents 表：命中即覆盖上游 URL。
+  // 模型 Key 按「是否显式携带记忆身份」分流（区分开发者与 bridge bot）：
+  //  - 带 x-tdai-user-key（开发者自带模型 key 直连官方端点）→ 透传客户端 Key
+  //    （BYOK：url 用 binding 里的、模型 token 用开发者自己的，两者都不是平台的）；
+  //  - 不带（bridge bot harness 拿 sk-mem 记忆 Key 当 AUTH_TOKEN）→ 用全局 key，
+  //    否则透传会把 sk-mem 泄给第三方 upstream。开发者为了通过记忆鉴权必然带这个头。
   const perUser = config.upstream.userUpstreams?.find((u) => u.userId === verify.userId);
   if (perUser) {
     upstreamRoute.entry = { url: perUser.url };
-    upstreamRoute.apiKey = isBuiltinAgent(upstreamRoute.agentSource) ? config.upstream.apiKey : "";
+    upstreamRoute.apiKey = c.req.header("x-tdai-user-key") ? "" : config.upstream.apiKey;
   }
   return {
     upstreamRoute,

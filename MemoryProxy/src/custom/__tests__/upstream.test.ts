@@ -84,7 +84,13 @@ describe("earlyAuth 按用户绑定", () => {
     unauthorized: (reason: string) => new Response(reason, { status: 401 }),
     forbidden: () => new Response(null, { status: 403 }),
   };
-  const req = (path: string) => ({ req: { path, header: () => undefined } });
+  const req = (path: string, withIdentity = false) =>
+    ({
+      req: {
+        path,
+        header: (n: string) => (withIdentity && n === "x-tdai-user-key") ? "sk-mem-usr-a" : undefined,
+      },
+    });
   const cfgWith = (userUpstreams: Array<{ userId: string; url: string }>) =>
     ({
       upstream: {
@@ -95,28 +101,20 @@ describe("earlyAuth 按用户绑定", () => {
       },
     }) as unknown as ProxyConfig;
 
-  it("命中 userId + 内置端点：entry 覆盖、apiKey 用全局（官方 mem 语义，防 sk-mem 泄给上游）", async () => {
-    const r = await earlyAuth(req("/claude-code/hit"), cfgWith([{ userId: "usr-a", url: "https://byok.example.com/v1" }]), "sk-model", errors) as EarlyAuthResult;
-    expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
-    expect(r.upstreamRoute.apiKey).toBe("sk-global");
-  });
-
-  it("命中 userId + 自定义 agent 路径：透传客户端模型 Key（BYOK）", async () => {
-    const cfg = {
-      upstream: {
-        url: "https://default.example.com/v1",
-        apiKey: "sk-global",
-        agents: { fw1: { url: "https://fw.example.com/v1" } },
-        userUpstreams: [{ userId: "usr-a", url: "https://byok.example.com/v1" }],
-      },
-    } as unknown as ProxyConfig;
-    const r = await earlyAuth(req("/fw1/hit"), cfg, "sk-model", errors) as EarlyAuthResult;
+  it("命中 userId + 显式记忆身份（开发者）：透传客户端模型 Key，url 用 binding（BYOK）", async () => {
+    const r = await earlyAuth(req("/claude-code/hit", true), cfgWith([{ userId: "usr-a", url: "https://byok.example.com/v1" }]), "sk-model", errors) as EarlyAuthResult;
     expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
     expect(r.upstreamRoute.apiKey).toBe("");
   });
 
+  it("命中 userId + 无显式记忆身份（bridge bot 拿记忆 Key 当 token）：用全局 key，防 sk-mem 泄给上游", async () => {
+    const r = await earlyAuth(req("/claude-code/hit"), cfgWith([{ userId: "usr-a", url: "https://byok.example.com/v1" }]), "sk-mem-bot", errors) as EarlyAuthResult;
+    expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
+    expect(r.upstreamRoute.apiKey).toBe("sk-global");
+  });
+
   it("未命中 userId：走全局兜底", async () => {
-    const r = await earlyAuth(req("/claude-code/miss"), cfgWith([{ userId: "usr-a", url: "https://byok.example.com/v1" }]), "sk-model", errors) as EarlyAuthResult;
+    const r = await earlyAuth(req("/claude-code/miss", true), cfgWith([{ userId: "usr-a", url: "https://byok.example.com/v1" }]), "sk-model", errors) as EarlyAuthResult;
     expect(r.upstreamRoute.entry).toBeUndefined();
     expect(r.upstreamRoute.url).toBe("https://default.example.com/v1");
     expect(r.upstreamRoute.apiKey).toBe("sk-global");
