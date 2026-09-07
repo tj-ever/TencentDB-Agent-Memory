@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { CostGuardConfig, ProxyConfig, RawYamlConfig, UpstreamProfile } from "./types.js";
-import { parseUpstreamAgents, parseUserUpstreams } from "./custom/upstream.js";
+import { parseAgentUpstreams, parseUpstreamAgents, parseUserUpstreams } from "./custom/upstream.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
@@ -309,6 +309,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       supportsImages: yaml.upstream?.supportsImages === true,
       agents: parseUpstreamAgents(yaml.upstream?.agents),
       userUpstreams: parseUserUpstreams(yaml.upstream?.userUpstreams),
+      agentUpstreams: parseAgentUpstreams(yaml.upstream?.agentUpstreams),
     },
     log: {
       file: overrides.logFile ?? yaml.log?.file ?? DEFAULT_CONFIG.log.file,

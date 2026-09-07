@@ -120,3 +120,83 @@ describe("earlyAuth 按用户绑定", () => {
     expect(r.upstreamRoute.apiKey).toBe("sk-global");
   });
 });
+
+describe("earlyAuth agent 直连端点（/claude-code/<agent-id>）", () => {
+  const errors = {
+    unauthorized: (reason: string) => new Response(reason, { status: 401 }),
+    forbidden: () => new Response(null, { status: 403 }),
+  };
+  const cfgBase = () =>
+    ({
+      upstream: { url: "https://default.example.com/v1", apiKey: "sk-global", agents: {} },
+      tdai: { serviceId: "s1" },
+      coreSkill: { endpoint: "http://mem:8420", serviceToken: "t", serviceId: "s1", timeoutMs: 1000 },
+      sessionInit: { defaultTaskId: "T" },
+    }) as unknown as ProxyConfig;
+
+  it("命中 agentId 绑定：路由覆盖为入口、模型 Key 透传、agentPreset 带默认 task", async () => {
+    // 反解 agent→team：mock MetadataClient 的 listTeams/listAgents。
+    const meta = await import("../../meta/client.js");
+    const realTeams = meta.MetadataClient.prototype.listTeams;
+    const realAgents = meta.MetadataClient.prototype.listAgents;
+    meta.MetadataClient.prototype.listTeams = async () => [{ team_id: "team-a" }] as never;
+    meta.MetadataClient.prototype.listAgents = async (teamId: string) =>
+      teamId === "team-a" ? [{ agent_id: "agt-x", team_id: "team-a" }] as never : [];
+    const cfg = {
+      ...cfgBase(),
+      upstream: {
+        ...cfgBase().upstream,
+        agentUpstreams: [{ agentId: "agt-x", url: "https://byok.example.com/v1", spaceId: "s1" }],
+      },
+    } as ProxyConfig;
+    try {
+      const r = await earlyAuth(
+        { req: { path: "/claude-code/agt-x/v1/messages", header: () => "sk-mem-user-x" } } as never,
+        cfg, "sk-model", errors,
+      ) as EarlyAuthResult;
+      expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
+      expect(r.upstreamRoute.apiKey).toBe("");
+      expect(r.agentPreset).toEqual({ teamId: "team-a", agentId: "agt-x", taskId: "T" });
+    } finally {
+      meta.MetadataClient.prototype.listTeams = realTeams;
+      meta.MetadataClient.prototype.listAgents = realAgents;
+    }
+  });
+
+  it("命中 agentId 绑定 + 无记忆身份头（bot 形）→ 全局 key、仍走绑定 url", async () => {
+    const meta = await import("../../meta/client.js");
+    const realTeams = meta.MetadataClient.prototype.listTeams;
+    const realAgents = meta.MetadataClient.prototype.listAgents;
+    meta.MetadataClient.prototype.listTeams = async () => [{ team_id: "team-a" }] as never;
+    meta.MetadataClient.prototype.listAgents = async (teamId: string) =>
+      teamId === "team-a" ? [{ agent_id: "agt-x", team_id: "team-a" }] as never : [];
+    const cfg = {
+      ...cfgBase(),
+      upstream: {
+        ...cfgBase().upstream,
+        agentUpstreams: [{ agentId: "agt-x", url: "https://byok.example.com/v1", spaceId: "s1" }],
+      },
+    } as ProxyConfig;
+    try {
+      const r = await earlyAuth(
+        { req: { path: "/claude-code/agt-x/v1/messages", header: () => undefined } } as never,
+        cfg, "sk-mem-bot", errors,
+      ) as EarlyAuthResult;
+      expect(r.upstreamRoute.entry).toEqual({ url: "https://byok.example.com/v1" });
+      expect(r.upstreamRoute.apiKey).toBe("sk-global");
+    } finally {
+      meta.MetadataClient.prototype.listTeams = realTeams;
+      meta.MetadataClient.prototype.listAgents = realAgents;
+    }
+  });
+
+  it("未命中 agentId 绑定 → 回落全局 space 语义（无 agentPreset）", async () => {
+    const r = await earlyAuth(
+      { req: { path: "/claude-code/default/v1/messages", header: () => "x-mem" } } as never,
+      cfgBase(), "sk-model", errors,
+    ) as EarlyAuthResult;
+    expect(r.agentPreset).toBeUndefined();
+    expect(r.upstreamRoute.entry).toBeUndefined();
+    expect(r.upstreamRoute.url).toBe("https://default.example.com/v1");
+  });
+});

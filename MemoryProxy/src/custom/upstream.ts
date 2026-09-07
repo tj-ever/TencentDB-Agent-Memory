@@ -1,4 +1,4 @@
-import type { AgentUpstreamEntry, ProxyConfig, RawYamlConfig, UserUpstreamEntry } from "../types.js";
+import type { AgentIdUpstreamEntry, AgentUpstreamEntry, ProxyConfig, RawYamlConfig, UserUpstreamEntry } from "../types.js";
 import { verifyUserKey } from "../auth.js";
 import type { VerifyUserResult } from "../auth.js";
 
@@ -72,12 +72,35 @@ export function parseUserUpstreams(
   return out;
 }
 
+/** 将 YAML 中的按 agent 绑定收敛为运行时契约：agentId 去重、空值丢弃。 */
+export function parseAgentUpstreams(
+  raw: NonNullable<RawYamlConfig["upstream"]>["agentUpstreams"],
+): AgentIdUpstreamEntry[] {
+  const out: AgentIdUpstreamEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw ?? []) {
+    const agentId = entry?.agentId?.trim();
+    const url = entry?.url?.trim();
+    if (!agentId || !url || seen.has(agentId)) continue;
+    seen.add(agentId);
+    out.push({ agentId, url, spaceId: entry?.spaceId?.trim() || undefined });
+  }
+  return out;
+}
+
 export interface EarlyAuthResult {
   upstreamRoute: UpstreamRoute;
   pathSpaceId: string;
   memoryKey: string;
   spaceId: string;
   verify: VerifyUserResult;
+  /**
+   * agent 直连端点（/claude-code/<agent-id>）命中绑定后反解出的身份预设。
+   * 由 handler 在构建 lcHeaders 后合并进 x-team-id/x-agent-id/x-task-id，
+   * 让官方 headerAutoSelect → direct-register 流程原生只注入 [Agent]（无真实
+   * task 也注入，taskDetail=null）。未命中 agent 直连时 undefined。
+   */
+  agentPreset?: { teamId: string; agentId: string; taskId?: string };
   /** 两个 handler 的 early-auth 块完全同构，仅错误响应格式不同——由调用方传入。 */
   errors: {
     unauthorized(reason: string): Response;
@@ -86,7 +109,43 @@ export interface EarlyAuthResult {
 }
 
 /**
- * 各 handler 的前置认证公共流程：路由解析 → 记忆身份解析 → user key 校验。
+ * agent 直连端点：把 `/claude-code/<agent-id>` 反解成 (teamId, agentId, taskId=defaultTaskId)。
+ *
+ * 命中条件：路径第一段 agentSource 是 `claude-code`，第二段在 `agentUpstreams` 绑定表里
+ * （未绑定 → 回落原 space 语义，零行为变化）。反解只做一步——在该 agent 的租户实例
+ * （绑定的 spaceId，默认 config.tdai.serviceId）上用开发者的记忆身份 user_id 调
+ * MetadataClient.listTeams(userId) → per-team listAgents（team-wide）→ 定位 agent 属
+ * team。不做跨实例探测（YAGNI）——agent 不归该开发者可见则反解失败，返回 undefined
+ * 回落表单。任何异常静默吞掉（不阻塞主流程）。
+ */
+async function tryResolveAgentPreset(
+  agentEntry: AgentIdUpstreamEntry,
+  userId: string,
+  agentId: string,
+  config: ProxyConfig,
+  userKey: string,
+): Promise<{ teamId: string; agentId: string; taskId?: string } | undefined> {
+  const spaceId = agentEntry.spaceId?.trim() || config.tdai?.serviceId || "default";
+  try {
+    const { MetadataClient } = await import("../meta/client.js");
+    const client = new MetadataClient(config.coreSkill, spaceId, userKey);
+    const teams = await client.listTeams(userId);
+    for (const team of teams) {
+      const agents = await client.listAgents(team.team_id);
+      if (agents.some((a) => a.agent_id === agentId)) {
+        const taskId = config.sessionInit?.defaultTaskId || "default";
+        return { teamId: team.team_id, agentId, taskId };
+      }
+    }
+    return undefined;
+  } catch (err) {
+    console.log(`[agent-direct] resolve agent=${agentId} team in space=${spaceId} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
+
+/**
+ * 各 handler 的前置认证公共流程：路由解析 → agent 直连判定 → 记忆身份解析 → user key 校验。
  * 记忆身份：x-tdai-user-key 优先，回退模型 Key（内置端点上两者本就是同一把
  * sk-mem-*）。开发者上游必须在请求头显式携带 x-tdai-user-key。
  */
@@ -97,6 +156,46 @@ export async function earlyAuth(
   errors: EarlyAuthResult["errors"],
 ): Promise<EarlyAuthResult | Response> {
   const upstreamRoute = resolveUpstreamRoute(config, c.req.path);
+
+  // ── agent 直连判定：/claude-code/<agent-id> 命中 agentUpstreams 绑定 ──
+  // 无真实 space 段（第二段时间上是 agent_id）；命中绑定 → 用绑定租户验证 + 反解
+  // team + 覆盖路由；未命中 → 回落原 space 语义（零行为变化）。
+  const isClaudeCode = upstreamRoute.agentSource === "claude-code";
+  const pathSecond = upstreamRoute.spaceId.trim();
+  const agentEntry = isClaudeCode
+    ? config.upstream.agentUpstreams?.find((a) => a.agentId === pathSecond)
+    : undefined;
+  if (agentEntry) {
+    const memoryKey = c.req.header("x-tdai-user-key") || apiKey;
+    // 用绑定租户验证记忆 key（而不是空 spaceId——auth 对空 space 直接 reject）。
+    const spaceId = agentEntry.spaceId?.trim() || config.tdai?.serviceId || "default";
+    const verify = await verifyUserKey(memoryKey, spaceId);
+    if (verify.rejected) {
+      return errors.unauthorized(`Authentication failed: ${verify.rejectReason ?? "unknown"}`);
+    }
+    upstreamRoute.spaceId = spaceId;
+    upstreamRoute.entry = { url: agentEntry.url };
+    upstreamRoute.apiKey = c.req.header("x-tdai-user-key") ? "" : config.upstream.apiKey;
+    // 反解 agent→team（request-scoped MetadataClient on bound space）。
+    const userKey = memoryKey || config.tdai?.apiKey || "";
+    const agentPreset = await tryResolveAgentPreset(agentEntry, verify.userId, pathSecond, config, userKey);
+    if (!agentPreset) {
+      // 反解失败：agent 不归该开发者可见，或内核不可用 → 回落表单（不 401，
+      // 让用户/开发者看到官方流程），但上游已按绑定换好。
+      console.log(`[agent-direct] session /claude-code/${pathSecond} resolve team failed → fallback to form`);
+    }
+    return {
+      upstreamRoute,
+      pathSpaceId: pathSecond,
+      memoryKey,
+      spaceId,
+      verify,
+      agentPreset,
+      errors,
+    };
+  }
+
+  // ── 常规路径：space 语义 + 按用户 BYOK 绑定 ──
   const spaceId = upstreamRoute.spaceId;
   const memoryKey = c.req.header("x-tdai-user-key") || apiKey;
   const verify = await verifyUserKey(memoryKey, spaceId);

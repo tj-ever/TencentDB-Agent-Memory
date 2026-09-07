@@ -404,6 +404,23 @@ export interface UserUpstreamEntry {
 }
 
 /**
+ * 按 agent（agent_id，如 `agt-xxxxxxxx`）的上游绑定——agent 直连端点
+ * `/claude-code/<agent-id>` 的绑定表。See `ProxyConfig.upstream.agentUpstreams`.
+ *
+ * `spaceId` 是 agent 所在租户实例的 service id（默认 `default`，单租户零配置）；
+ * 多租户时管理员显式填 instance id，proxy 用它做 `x-tdai-service-id` 租户路由并
+ * 在反解 agent→team 时调 MetadataClient。
+ */
+export interface AgentIdUpstreamEntry {
+  /** 内核 agent_id（如 `agt-xxxxxxxx`）。 */
+  agentId: string;
+  /** 该 agent 的模型上游 base URL；模型 Key 由客户端自带透传（BYOK）。 */
+  url: string;
+  /** agent 所在租户实例。默认 `default`。 */
+  spaceId?: string;
+}
+
+/**
  * 可切换的全局上游 profile（面板「Proxy 上游」表格的行）。
  * `upstream` 始终等于 enabled 的那条 profile —— profiles 只是存储形态，
  * 转发逻辑只看 `upstream`，不为 profile 增加任何运行时分支。
@@ -459,6 +476,12 @@ export interface ProxyConfig {
      * apiKey 清空透传客户端 Key）。未命中的用户走全局 upstream.url。
      */
     userUpstreams?: Array<UserUpstreamEntry>;
+    /** 按 agent（agent_id）的上游绑定——agent 直连端点 `/claude-code/<agent-id>`。
+     * 命中即覆盖 upstreamRoute，并把 agent→team 反解出的身份预设写回请求头
+     * （x-team-id/x-agent-id/x-task-id=defaultTaskId），走官方 direct-register
+     * 只注入 [Agent]（无 task 也注入）。模型 Key 由客户端自带透传。
+     */
+    agentUpstreams?: Array<AgentIdUpstreamEntry>;
   };
   log: {
     file: string;    // JSONL path; empty string disables file logging
@@ -766,6 +789,8 @@ export interface RawYamlConfig {
     agents?: Record<string, { url?: string } | null | undefined>;
     /** 按用户（user_id）的上游绑定。See `UserUpstreamEntry`. */
     userUpstreams?: Array<{ userId?: string; url?: string }>;
+    /** 按 agent（agent_id）的上游绑定。See `AgentIdUpstreamEntry`. */
+    agentUpstreams?: Array<{ agentId?: string; url?: string; spaceId?: string }>;
   };
   /** 可切换的全局上游 profile 列表。See `UpstreamProfile`. */
   upstreamProfiles?: Array<{
