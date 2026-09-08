@@ -10,6 +10,7 @@ import {
   AddIcon,
   ChevronRightIcon,
   DeleteIcon,
+  InternetIcon,
   ViewListIcon,
   ViewModuleIcon,
 } from 'tea-icons-react';
@@ -298,7 +299,7 @@ export default function AgentGrid({
                 <div className="_memory-agents-card-actions">
                   {isAdmin && (
                     <Button type="text" onClick={() => onBindUpstream(agent)} title={t('agentGrid.card.upstream.tooltip')}>
-                      {t('agentGrid.card.upstream')}
+                      <InternetIcon size={12} /> {t('agentGrid.card.upstream')}
                     </Button>
                   )}
                   <Button
@@ -364,7 +365,7 @@ export default function AgentGrid({
                   <>
                     {isAdmin && (
                       <Button type="link" onClick={() => onBindUpstream(agent)}>
-                        {t('agentGrid.card.upstream')}
+                        <InternetIcon size={12} /> {t('agentGrid.card.upstream')}
                       </Button>
                     )}
                     <Button type="link" disabled={!editable} onClick={() => onDeleteAgent(agent)}>

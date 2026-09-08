@@ -429,7 +429,7 @@ export default function TeamManagementPanel({
         <Modal
           visible
           caption={t('agentUpstream.caption')}
-          size="s"
+          size="m"
           onClose={() => setBindingAgent(null)}
           disableEscape={savingUpstream}
         >
