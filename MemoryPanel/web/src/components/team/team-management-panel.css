@@ -1426,9 +1426,8 @@
   border-radius: 4px;
   font-size: 12px;
   color: var(--tea-color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
+  white-space: normal;
   flex: 1;
   min-width: 0;
 }
