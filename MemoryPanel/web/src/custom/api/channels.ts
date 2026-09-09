@@ -15,11 +15,15 @@ export interface ChannelBot {
   };
   session_mode: 'none' | 'user' | 'chat';
   system_prompt: string;
+  /** 机器人 git 凭证（https+token）。password 接口返回已脱敏，留空/掩码提交 = 保持原值。 */
+  gits: Array<{ id: string; name: string; host: string; username: string; password: string }>;
   created_at: string;
   updated_at: string;
   status: 'running' | 'stopped' | 'error';
   error: string | null;
 }
+
+export type ChannelGitCred = ChannelBot['gits'][number];
 
 export type ChannelDraft = Omit<ChannelBot, 'id' | 'created_at' | 'updated_at' | 'status' | 'error' | 'enabled'> & {
   enabled?: boolean;

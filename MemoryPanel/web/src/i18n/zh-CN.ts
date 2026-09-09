@@ -1403,6 +1403,14 @@ export const zhCN = {
   'channels.help.requireMention': '开启后，群里必须 @机器人 才响应；私聊不受影响。',
   'channels.help.initialText': '收到消息、正式回复前发送的提示文本。默认「思考中…」。',
   'channels.help.systemPrompt': '自定义系统提示词，覆盖内置通用规则。留空用默认。',
+  'channels.gitCreds.title': 'Git 凭证',
+  'channels.gitCreds.desc': '机器人对话里执行 git clone/拉取 https 仓库时，按仓库 host 自动用对应凭证认证（GIT_ASKPASS）。每行一个仓库域名 + 用户名 + token。',
+  'channels.gitCreds.name': '名称',
+  'channels.gitCreds.host': '仓库 host',
+  'channels.gitCreds.username': '用户名',
+  'channels.gitCreds.password': 'Token',
+  'channels.gitCreds.add': '+ 添加凭证',
+  'channels.gitCreds.remove': '删除',
 
   // 资产创建与分配（Admin 与 Member 一致；每个资产页都跳入介绍。
   // 文案统一按「是什么 → 怎么导入 → 怎么使用」三段展开，帮首次用户建立完整心智）
