@@ -38,6 +38,18 @@ MemoryPanel:8125 -> MemoryCore（面板自身业务）
 - 主动处理用户撤回（订阅飞书 `im.message.recalled_v1` 原始事件，需在飞书开放平台为机器人应用订阅该事件）：排队中的消息直接移出队列；生成中的消息中止 `claude` 子进程并停止打字机；已回复完成的保留卡片不动。回复目标已撤回导致的开卡失败会在生成开始前快速退出，不浪费上游 token。
 - 识别飞书文档链接并按机器人凭据处理可访问权限。
 
+### 机器人 git 凭证（HTTPS+token）
+
+机器人对话里需要 `git clone`/拉取私有 https 仓库（如自建 GitLab `code.choerodon.com.cn`）时，在**面板 → 飞书机器人 → 编辑 → Git 凭证**里按行配置「仓库 host + 用户名 + token/口令」。一个机器人可配多行、各对应不同 host，git 按目标 host 自动选对应凭证。
+
+机制（`MemoryBridge/src/gitCreds.ts`）：
+
+- 启动机器人时按 `gits[]` 生成 `GIT_ASKPASS` 脚本 `${BRIDGE_DATA_DIR}/git-askpass-<botId>.sh`（属主 0700，token 明文只落持久卷，**不进 claude 子进程 env**）。
+- `claudeRunner` spawn claude 时注入 `GIT_ASKPASS=<脚本>` + `GIT_TERMINAL_PROMPT=0`：git 对 https 认证时调用脚本（prompt 含仓库 host），命中该机器人的凭证行则回显 username/token；**未命中的 host 直接认证失败退出，绝不交互挂起机器人**。
+- 停止/删除机器人时清理脚本文件。
+- 多机器人同 host 不同 token 天然隔离（脚本 per-bot）。
+- 面板里 `password` 回显为掩码 `********`/`前8位****`；编辑留空或提交掩码 = 保持原 token；删除某行的整行即删除该凭证。没有配置任何 git 凭证的机器人完全不注入 GIT_ASKPASS，保持默认 git 行为。
+
 ### 配置文件和目录
 
 机器人配置保存在 `BRIDGE_DATA_DIR/bots.json`。密钥只在写入时提交，HTTP 返回值始终脱敏。
@@ -54,7 +66,8 @@ MemoryPanel:8125 -> MemoryCore（面板自身业务）
 | `feishu.app_id` / `app_secret` | 飞书应用凭据 |
 | `feishu.policy` | `requireMention`、`dmMode`、可选私聊白名单 |
 | `session_mode` | `none`、`user` 或 `chat` |
-| `system_prompt` | 机器人专用 system prompt；为空时使用 `config/zhuoyu.system.md` 通用规则 |
+| `system_prompt` | 项目业务增量，叠加在通用基线（交付/原型/质量规则）之后合并注入，可留空；留空即只有通用基线 |
+| `gits` | 机器人 git 凭证表（HTTPS+token），每项含 `name`/`host`/`username`/`password`。`host` 是匹配键（如 `code.choerodon.com.cn`），机器人对话里 `git clone` https 仓库时按 host 自动认证；`password` 提交掩码=保持原值 |
 
 Bridge 的运行数据包括：
 

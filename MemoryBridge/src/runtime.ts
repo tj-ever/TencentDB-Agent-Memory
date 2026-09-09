@@ -1,4 +1,6 @@
 import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createLarkChannel, defaultLogger, LoggerLevel, type LarkChannel } from '@larksuiteoapi/node-sdk';
 import { createClaudeRunner, type ClaudeRunner } from './claudeRunner.js';
 import { extractDriveFiles, openDocsFromText, rewriteFeishuHost } from './docShare.js';
@@ -7,11 +9,13 @@ import { resolveSessionId, SESSION_MODE_LABEL } from './sessionMode.js';
 import { getBot, listBots, updateBot, type Bot, type BotStatus } from './store.js';
 import { enqueue, dequeue, loadQueue, type PendingMsg } from './messageQueue.js';
 import { clearBotSession as clearSession, listBotSessions, rememberSessionUser, type SessionMeta } from './sessionManager.js';
+import { writeAskpassScript, removeAskpassScript } from './gitCreds.js';
 
 const running = new Map<string, { channel: LarkChannel | null; error: string | null; abort?: () => boolean }>();
 
 // 会话重置指令（整条消息只有指令本身才算，正文里提到不算）。
 const RESET_CMD_RE = /^\/?(?:重置|清空|reset|clear)(?:会话|上下文|对话|session|context)?$|^\/?(?:重新开始|新对话|新会话)$/i;
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
 
 // 包装 SDK logger，过滤「no <raw事件> handle」这类无 slot 原始事件的无害告警。
 function silentNoHandleWarn() {
@@ -315,6 +319,8 @@ export async function startBot(id: string): Promise<BotRunState> {
     outbound: { streamInitialText: bot.feishu.stream_initial_text || '思考中…' },
   });
   const upstream = await resolveUpstreamConfig(bot);
+  const gitAskpassPath = writeAskpassScript(bot, DATA_DIR);
+  if (gitAskpassPath) console.log(`[${bot.id}] git askpass script: ${gitAskpassPath}`);
   const claude = createClaudeRunner({
     baseUrl: claudeBaseUrl(bot),
     userKey: bot.memory.user_key,
@@ -325,6 +331,7 @@ export async function startBot(id: string): Promise<BotRunState> {
     feishu: bot.feishu,
     systemRules: bot.system_prompt || null,
     sessionMode: bot.session_mode,
+    gitAskpassPath: gitAskpassPath ?? undefined,
   });
   const { pump, abort } = attach(bot, channel, claude, upstream.supportsImages);
   running.set(id, { channel, error: null, abort });
@@ -350,12 +357,16 @@ export async function startBot(id: string): Promise<BotRunState> {
 
 export async function stopBot(id: string): Promise<BotRunState> {
   const st = running.get(id);
-  if (!st) return { status: 'stopped', error: null };
+  if (!st) {
+    removeAskpassScript(id, DATA_DIR); // 未运行的 bot 删除/停止也可能残留脚本文件
+    return { status: 'stopped', error: null };
+  }
   st.abort?.();
   try {
     await st.channel?.disconnect();
   } catch { /* ignore */ }
   running.delete(id);
+  removeAskpassScript(id, DATA_DIR);
   // 状态一致性：停止时持久化 enabled=false，避免进程重启后被 startEnabled 重新拉起
   // （否则会出现「页面显示已停止，重启后却偷偷又在跑」）。
   updateBot(id, { enabled: false });

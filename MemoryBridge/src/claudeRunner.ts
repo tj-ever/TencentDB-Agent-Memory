@@ -149,6 +149,8 @@ export interface ClaudeRunnerOptions {
   feishu?: FeishuCreds;
   systemRules?: string | null;
   sessionMode?: SessionMode;
+  /** 机器人 git 凭证 askpass 脚本路径；有则注入 GIT_ASKPASS，让 https 拉取按 host 自动认证。 */
+  gitAskpassPath?: string;
 }
 
 export interface ClaudeRunner {
@@ -162,7 +164,7 @@ export interface ClaudeRunner {
 }
 
 export function createClaudeRunner({
-  baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none',
+  baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none', gitAskpassPath,
 }: ClaudeRunnerOptions): ClaudeRunner {
   const rules = [BASE_REQUIREMENTS, systemRules || defaultRules(name)].join('\n\n');
   const MAX_RETRIES = 2;
@@ -198,6 +200,11 @@ export function createClaudeRunner({
         FEISHU_CHAT_ID: chatId || '',
         FEISHU_EMBED_PROTOTYPE: EMBED_SCRIPT,
         FEISHU_PUBLISH_DOC: PUBLISH_SCRIPT,
+        // 机器人 git 凭证：GIT_ASKPASS 指向该 bot 的 askpass 脚本（按 host 返回 user/token）。
+        // GIT_TERMINAL_PROMPT=0 —— 未命中的 host 立刻认证失败退出，绝不交互挂起 claude。
+        ...(gitAskpassPath
+          ? { GIT_ASKPASS: gitAskpassPath, GIT_TERMINAL_PROMPT: '0' }
+          : {}),
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '500000',
         // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
         // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。
