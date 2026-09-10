@@ -13,6 +13,7 @@ import { registerDeliverable } from './lib/deliverable-registry.mjs';
 
 const API = 'https://open.feishu.cn/open-apis';
 const BATCH = 40; // 单批 children 上限（skill 实测 ~40 稳妥）
+const MAX_TABLE_ROWS = 9; // 飞书表格块 row_size 上限（探针实测：8 行表 OK / 10 行表 1770001 invalid param）；数据行按 表头+8 切分
 
 // ---------- CLI ----------
 const argv = process.argv.slice(2);
@@ -153,7 +154,18 @@ function parseMd(md) {
       }
       rows.splice(1, 1); // 第二行是 |---|---| 分隔行，不是数据
       flush();
-      units.push({ kind: 'table', rows });
+      // 飞书表格块 row_size 上限 = 9（探针实测：8 OK / 10 FAIL 1770001，含表头 1 行）。
+      // 长表切成多个「表头 + ≤8 数据行」的子表（总行数 = 9 = 表头+8 数据），各自独立成 unit —— 断点续传按子表走。
+      const head = rows[0];
+      const data = rows.slice(1);
+      const DATA_PER_TABLE = MAX_TABLE_ROWS - 1; // 每子表最多 8 条数据，加上表头正好 9
+      if (data.length <= DATA_PER_TABLE) {
+        units.push({ kind: 'table', rows });
+      } else {
+        for (let k = 0; k < data.length; k += DATA_PER_TABLE) {
+          units.push({ kind: 'table', rows: [head, ...data.slice(k, k + DATA_PER_TABLE)] });
+        }
+      }
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
