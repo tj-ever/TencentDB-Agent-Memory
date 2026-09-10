@@ -10,7 +10,6 @@ import { getBot, listBots, updateBot, type Bot, type BotStatus } from './store.j
 import { enqueue, dequeue, loadQueue, type PendingMsg } from './messageQueue.js';
 import { clearBotSession as clearSession, listBotSessions, rememberSessionUser, type SessionMeta } from './sessionManager.js';
 import { writeAskpassScript, removeAskpassScript } from './gitCreds.js';
-import { ensureMcpJson } from './mcpConfig.js';
 
 const running = new Map<string, { channel: LarkChannel | null; error: string | null; abort?: () => boolean }>();
 
@@ -361,11 +360,6 @@ export async function startBot(id: string): Promise<BotRunState> {
   const bot = getBot(id);
   if (!bot) throw new Error('BOT_NOT_FOUND');
   mkdirSync(bot.work_dir, { recursive: true });
-  // 给 bot 工作目录写目录级 .mcp.json（mac-router → Mac mini MCP Router，MySQL 查询等）。
-  // env 未配置时静默跳过；已配置时幂等写入。
-  if (ensureMcpJson(bot.work_dir)) {
-    console.log(`[${bot.id}] mcp.json ensured in ${bot.work_dir}`);
-  }
 
   const channel = createLarkChannel({
     appId: bot.feishu.app_id,

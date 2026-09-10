@@ -52,6 +52,23 @@ MemoryPanel:8125 -> MemoryCore（面板自身业务）
 - 多机器人同 host 不同 token 天然隔离（脚本 per-bot）。
 - 面板里 `password` 回显为掩码 `********`/`前8位****`；编辑留空或提交掩码 = 保持原 token；删除某行的整行即删除该凭证。没有配置任何 git 凭证的机器人完全不注入 GIT_ASKPASS，保持默认 git 行为。
 
+### 机器人 MCP（按需，仅个别 bot）
+
+飞书机器人用 `claude -p` headless 运行，MCP server 按 **cwd 的 project scope** 加载。要在某 bot 的对话里提供 MCP 工具（如查 MySQL 的 `execute_sql` / `get_schema_info`，或联网搜索/文档查询），在**该 bot 工作目录**用 `claude mcp add` 配置（注意**不要**用 `.mcp.json` 文件——它需要交互式审批，headless 无法批准）：
+
+```bash
+# 在 tdai-memory-bridge 容器内，针对某个 bot 的工作目录
+cd /app/workspaces/<botWorkDir> && \
+  claude mcp add --scope local --transport http mac-router http://<MCP_HOST>:3282/mcp \
+    --header "Authorization: Bearer <MCPR_TOKEN>"
+```
+
+- 地址指向 MCP Router 聚合器（如 Mac mini 上的 MCP Router 应用，streamable HTTP，跨局域网可达）。
+- `--scope local` 写入 `/home/node/.claude.json` 的 `projects[<cwd>].mcpServers`，**免审批**直接 Connected；`/home/node/.claude` 是持久卷，容器重建保留。
+- 只对执行 `claude mcp add` 的工作目录生效——如需「仅阳光 bot 可用」，就在 `/app/workspaces/yangguang` 配、其他 bot 不配即可。已配置示例：阳光（`yangguang`）已加 `mac-router`（含 MySQL 查询工具），卓驭/海大未配。
+- MCP server 与机器人不在同一台机器也能用（HTTP type，claude 只发请求）。
+- 移除：`claude mcp remove mac-router`（同目录下执行）。
+
 ### 配置文件和目录
 
 机器人配置保存在 `BRIDGE_DATA_DIR/bots.json`。密钥只在写入时提交，HTTP 返回值始终脱敏。
