@@ -2,11 +2,14 @@
  * Tools Routes — Agent self-discovery HTTP endpoints.
  *
  * Two endpoints for the v7 progressive-exposure pattern:
- *   POST /tools/list — discover available tools for a knowledge resource
+ *   POST /tools/list — list available tools for a knowledge resource
  *   POST /tools/call — execute a tool on a knowledge resource
  *
- * Tools are defined per resource type (wiki / code-graph). Management operations
- * (create/delete/ingest/sync) are NOT exposed — only read-only query tools.
+ * Tools are defined per resource type (wiki / code-graph). Query tools are
+ * read-only; management (write) tools (raw_write/raw_rm/page_write/page_rm/ingest
+ * for wiki, sync/delete for code-graph) are ALSO exposed so agents can update a
+ * knowledge base from the session. Resource ownership/授权 by the caller is done
+ * (or not) at the Panel/proxy layer — KS itself only validates service_id.
  *
  * Routes are defined WITHOUT /v3 prefix — prefix applied at server.ts mount level.
  */
@@ -45,7 +48,7 @@ interface HttpToolDef {
   params: Record<string, HttpToolParam>;
 }
 
-/** Wiki tools (7) — read-only query tools for LLM agents. */
+/** Wiki tools (12) — read-only query + management/write tools for LLM agents. */
 const WIKI_TOOLS: HttpToolDef[] = [
   {
     name: "get_info",
@@ -88,6 +91,50 @@ const WIKI_TOOLS: HttpToolDef[] = [
     params: {
       filenames: { type: "array", required: true, description: "文件名数组" },
     },
+  },
+  {
+    name: "raw_write",
+    description:
+      "【写入】上传/覆盖原始源文件（不触发入库；写完后调 ingest 重新入库）。files 是 {filename, content} 对象数组。注意：你的工具环境只能透传原始内容——如果你拿到了飞书文档正文，先把正文落成 .md 再调用本工具写入。",
+    params: {
+      files: {
+        type: "array",
+        required: true,
+        description: "[{filename: string(≤512KB), content: string}] 待写入的源文件；最多 10 个、总 ≤5MB",
+      },
+    },
+  },
+  {
+    name: "raw_rm",
+    description: "【写入】删除原始源文件，并级联清理由其生成/引用的 wiki 页面。",
+    params: {
+      filenames: { type: "array", required: true, description: "要删除的文件名数组" },
+    },
+  },
+  {
+    name: "page_write",
+    description:
+      "【写入】直接写入/覆盖已入库的 wiki 页面（自动注入 locked:true）。pages 是 {ref, content} 对象数组；ref 是页面 id 或相对路径（不带 .md）。注意：写 page 不会触发重新入库，只有 raw 源变化才需要 ingest_page；若你改了 raw 源或要重新抽取，请用 ingest_page。",
+    params: {
+      pages: {
+        type: "array",
+        required: true,
+        description: "[{ref: string, content: string}] 页面数组；单页 ≤512KB，一次 ≤20 个",
+      },
+    },
+  },
+  {
+    name: "page_rm",
+    description: "【写入】删除 wiki 页面，并级联清理引用关系。",
+    params: {
+      refs: { type: "array", required: true, description: "页面 id 或路径数组（一次 ≤20 个）" },
+    },
+  },
+  {
+    name: "ingest",
+    description:
+      "【写入】触发整个 wiki 重新入库（LLM 把 raw 源文件加工成页面 + 重建索引）。通常在 raw_write 上传/覆盖源文件之后调用。要求至少有一个源文件。wiki 正在入库中会返回 busy。",
+    params: {},
   },
 ];
 
@@ -174,6 +221,16 @@ const CODE_GRAPH_TOOLS: HttpToolDef[] = [
       pattern: { type: "string", required: false, description: "按 glob 模式过滤（如 \"*.tsx\"、\"**/*.test.ts\"）" },
       format: { type: "string", required: false, default: "tree", enum: ["tree", "flat", "grouped"], description: "输出格式：tree（层级，默认）、flat（平铺列表）、grouped（按语言分组）" },
     },
+  },
+  {
+    name: "sync",
+    description: "【写入】重新克隆/拉取仓库最新提交并重建索引（增量同步）。仓库正在构建中返回 busy。",
+    params: {},
+  },
+  {
+    name: "delete",
+    description: "【写入】删除该 code-graph（克隆目录与索引一并清理）。不可恢复。",
+    params: {},
   },
 ];
 
@@ -299,6 +356,16 @@ export function createToolsRoutes(deps: ToolsRouteDeps): Hono {
 //  Wiki tool execution
 // ═══════════════════════════════════════════════════════════════════════
 
+/** Map WriteOutcome error codes → HTTP Response. Returns Response if handled, null otherwise. */
+function maybeWriteError(outcome: unknown): Response | null {
+  if (outcome === null) return Response.json(wrapError(404, "wiki not found"), { status: 404 });
+  if (outcome === "processing") return Response.json(wrapError(409, "wiki is processing; cannot write"), { status: 409 });
+  if (outcome === "invalid_path") return Response.json(wrapError(400, "invalid path: traversal detected"), { status: 400 });
+  if (outcome === "forbidden_path") return Response.json(wrapError(400, "forbidden path (structural file or outside wiki/)"), { status: 400 });
+  if (outcome === "too_large") return Response.json(wrapError(413, "content exceeds size limit"), { status: 413 });
+  return null;
+}
+
 async function executeWikiTool(
   serviceId: string,
   toolName: string,
@@ -366,6 +433,87 @@ async function executeWikiTool(
       const result = wikiService.rawReadMany(serviceId, team_id, wiki_id, filenames as string[]);
       return Response.json(wrapOk({ items: result }));
     }
+    // ── 写入/管理工具（agent 可更新知识库）──
+    case "raw_write": {
+      const files = params.files;
+      if (!Array.isArray(files) || files.length === 0) {
+        return Response.json(wrapError(400, "files is required (non-empty array of {filename,content})"), { status: 400 });
+      }
+      const validated: { filename: string; content: string }[] = [];
+      for (const item of files) {
+        if (!item || typeof item !== "object") {
+          return Response.json(wrapError(400, "files items must be {filename, content}"), { status: 400 });
+        }
+        const r = item as Record<string, unknown>;
+        if (typeof r.filename !== "string" || !r.filename) {
+          return Response.json(wrapError(400, "filename is required for each file"), { status: 400 });
+        }
+        if (typeof r.content !== "string") {
+          return Response.json(wrapError(400, "content must be string for each file"), { status: 400 });
+        }
+        validated.push({ filename: r.filename, content: r.content });
+      }
+      const result = wikiService.rawWriteMany(serviceId, team_id, wiki_id, validated, /* userId */ undefined);
+      const err = maybeWriteError(result);
+      if (err) return err;
+      try { wikiMgr.sync(wiki_id); } catch (e) { console.warn(`[wiki] wikiMgr.sync(${wiki_id}) failed after raw_write:`, e); }
+      return Response.json(wrapOk({ items: result }));
+    }
+    case "raw_rm": {
+      const filenames = params.filenames;
+      if (!Array.isArray(filenames) || filenames.length === 0) {
+        return Response.json(wrapError(400, "filenames is required (non-empty array)"), { status: 400 });
+      }
+      const result = await wikiService.rawRm(serviceId, team_id, wiki_id, filenames as string[]);
+      const err = maybeWriteError(result);
+      if (err) return err;
+      try { wikiMgr.sync(wiki_id); } catch (e) { console.warn(`[wiki] wikiMgr.sync(${wiki_id}) failed after raw_rm:`, e); }
+      return Response.json(wrapOk(result));
+    }
+    case "page_write": {
+      const pages = params.pages;
+      if (!Array.isArray(pages) || pages.length === 0) {
+        return Response.json(wrapError(400, "pages is required (non-empty array of {ref,content})"), { status: 400 });
+      }
+      const validated: { ref: string; content: string }[] = [];
+      for (const item of pages) {
+        if (!item || typeof item !== "object") {
+          return Response.json(wrapError(400, "pages items must be {ref, content}"), { status: 400 });
+        }
+        const r = item as Record<string, unknown>;
+        if (typeof r.ref !== "string" || !r.ref) {
+          return Response.json(wrapError(400, "ref is required for each page"), { status: 400 });
+        }
+        if (typeof r.content !== "string") {
+          return Response.json(wrapError(400, "content must be string for each page"), { status: 400 });
+        }
+        validated.push({ ref: r.ref, content: r.content });
+      }
+      const result = wikiService.pageWriteMany(serviceId, team_id, wiki_id, validated);
+      const err = maybeWriteError(result);
+      if (err) return err;
+      try { wikiMgr.sync(wiki_id); } catch (e) { console.warn(`[wiki] wikiMgr.sync(${wiki_id}) failed after page_write:`, e); }
+      return Response.json(wrapOk({ items: result }));
+    }
+    case "page_rm": {
+      const refs = params.refs;
+      if (!Array.isArray(refs) || refs.length === 0) {
+        return Response.json(wrapError(400, "refs is required (non-empty array)"), { status: 400 });
+      }
+      const result = await wikiService.pageRm(serviceId, team_id, wiki_id, refs as string[]);
+      const err = maybeWriteError(result);
+      if (err) return err;
+      try { wikiMgr.sync(wiki_id); } catch (e) { console.warn(`[wiki] wikiMgr.sync(${wiki_id}) failed after page_rm:`, e); }
+      return Response.json(wrapOk(result));
+    }
+    case "ingest": {
+      const result = wikiService.ingest(serviceId, team_id, wiki_id, /* requesterUserId */ undefined);
+      if (result.kind === "not_found") return Response.json(wrapError(404, "wiki not found"), { status: 404 });
+      if (result.kind === "busy") {
+        return Response.json(wrapError(409, "wiki is processing; cannot ingest"), { status: 409 });
+      }
+      return Response.json(wrapOk({ wiki_id: result.row.wiki_id, status: result.row.status }), { status: 202 });
+    }
     default:
       return Response.json(wrapError(403, `unknown tool: ${toolName}`), { status: 403 });
   }
@@ -409,6 +557,21 @@ async function executeCodeGraphTool(
     const detail = cgService.get(serviceId, team_id, code_graph_id);
     if (!detail) return Response.json(wrapError(404, "code graph not found"), { status: 404 });
     return Response.json(wrapOk(detail));
+  }
+
+  // ── 管理工具（不要求 ready 状态）──
+  if (toolName === "sync") {
+    const result = cgService.sync(serviceId, team_id, code_graph_id);
+    if (result.kind === "not_found") return Response.json(wrapError(404, "code graph not found"), { status: 404 });
+    if (result.kind === "busy") {
+      return Response.json(wrapError(409, "code graph is processing; cannot sync"), { status: 409 });
+    }
+    return Response.json(wrapOk({ code_graph_id, status: result.row.status }), { status: 202 });
+  }
+  if (toolName === "delete") {
+    const ok = cgService.delete(serviceId, team_id, code_graph_id);
+    if (!ok) return Response.json(wrapError(404, "code graph not found"), { status: 404 });
+    return Response.json(wrapOk({ deleted: true, code_graph_id }));
   }
 
   // All other tools require synced status
