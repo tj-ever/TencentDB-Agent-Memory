@@ -35,3 +35,10 @@ it('fails fast (exit 1) when host not matched', () => {
   const p = scriptForHosts([{ host: 'code.choerodon.com.cn', username: 'lhq', password: 'tok-123' }]);
   expect(() => execFileSync(p, ["Username for 'https://github.com':"], { encoding: 'utf8' })).toThrow();
 });
+
+it('matches long repo host (config host includes full repo URL)', () => {
+  const p = scriptForHosts([{ host: 'https://code.choerodon.com.cn/middleware-hd-hwsxxt/hd-proj-sdd', username: '24430', password: 'tok-123' }]);
+  expect(String(execFileSync(p, ["Username for 'https://code.choerodon.com.cn':"], { encoding: 'utf8' })).trim()).toBe('24430');
+  expect(String(execFileSync(p, ["Password for 'https://24430@code.choerodon.com.cn':"], { encoding: 'utf8' })).trim()).toBe('tok-123');
+  unlinkSync(p);
+});

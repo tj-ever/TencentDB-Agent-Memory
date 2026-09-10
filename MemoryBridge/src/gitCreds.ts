@@ -15,7 +15,9 @@ import type { GitCredential } from './store.js';
 
 /** 把一条 git 凭证转成 askpass 脚本里的一个分支（shell 引号安全）。 */
 function branch(cred: GitCredential): string {
-  const host = cred.host.trim();
+  // git 的 askpass prompt 只含裸 host（`Username for 'https://host':`），从不带仓库路径；
+  // 归一化配置值（剥掉 scheme/user@/路径）再匹配，兼容「填完整仓库 URL」的配置。
+  const host = coreHost(cred.host.trim());
   const user = cred.username.replace(/'/g, "'\\''");
   const pass = cred.password.replace(/'/g, "'\\''");
   return [
@@ -30,6 +32,11 @@ function branch(cred: GitCredential): string {
     `  exit 0`,
     `fi`,
   ].join('\n');
+}
+
+/** 从配置 host 里剥出裸 host：去掉 scheme、user@、路径/查询。 */
+function coreHost(h: string): string {
+  return h.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^@/]+@/, '').replace(/[/?#].*$/, '');
 }
 
 /**
