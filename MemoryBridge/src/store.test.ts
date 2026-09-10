@@ -41,3 +41,29 @@ it('create masks secrets and update keeps them', () => {
   expect(updated?.feishu.app_secret).toBe('super-secret-value');
   rmSync(dir, { recursive: true, force: true });
 });
+
+it('gits masks password, keeps on masked submit, resets when cleared', () => {
+  const bot = store.createBot({
+    name: '卓驭',
+    work_dir: dir,
+    memory: { proxy_base_url: 'http://127.0.0.1:8096', space_id: 'default', user_key: 'sk-u1' },
+    binding: { team_id: 'team-1', agent_id: 'agt-1', task_id: 'task-1' },
+    feishu: { app_id: 'cli_x', app_secret: 's' },
+    session_mode: 'user',
+    gits: [{ id: 'git-a', name: 'choerodon', host: 'code.choerodon.com.cn', username: 'lhq', password: 'tok-1234567890' }],
+  } satisfies BotInput);
+  const pub = store.publicBot(bot);
+  expect(pub.gits[0]!.password).not.toContain('tok-1234567890');
+  expect(pub.gits[0]!.password.endsWith('****')).toBe(true);
+
+  // 掩码提交 → 保持原 token
+  const kept = store.updateBot(bot.id, {
+    ...bot,
+    gits: [{ ...pub.gits[0]!, password: pub.gits[0]!.password }],
+  } satisfies BotInput);
+  expect(kept?.gits[0]!.password).toBe('tok-1234567890');
+
+  // 整体清空 → 清空
+  const cleared = store.updateBot(bot.id, { ...bot, gits: [] } satisfies BotInput);
+  expect(cleared?.gits).toEqual([]);
+});

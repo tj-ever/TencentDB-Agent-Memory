@@ -166,6 +166,8 @@ export interface ClaudeRunnerOptions {
   feishu?: FeishuCreds;
   systemRules?: string | null;
   sessionMode?: SessionMode;
+  /** 机器人 git 凭证 askpass 脚本路径；有则注入 GIT_ASKPASS，让 https 拉取按 host 自动认证。 */
+  gitAskpassPath?: string;
 }
 
 export interface ClaudeRunner {
@@ -191,7 +193,7 @@ function terminologySection(workDir: string): string {
 }
 
 export function createClaudeRunner({
-  baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none',
+  baseUrl, userKey, binding, model, name, workDir, feishu, systemRules, sessionMode = 'none', gitAskpassPath,
 }: ClaudeRunnerOptions): ClaudeRunner {
   // 通用基线（交付/原型/质量规则）对所有 bot 生效；system_prompt 是项目业务增量，
   // 追加在基线之后合并注入，而不是整体覆盖（覆盖会让自定义 bot 丢失质量规则）。
@@ -232,6 +234,11 @@ export function createClaudeRunner({
         FEISHU_PUBLISH_DOC: PUBLISH_SCRIPT,
         // 交付物注册表：脚本成功后自动登记 doc_id/块 id，迭代请求据此路由回原文档
         FEISHU_DELIVERABLES: join(workDir, 'deliverables.json'),
+        // 机器人 git 凭证：GIT_ASKPASS 指向该 bot 的 askpass 脚本（按 host 返回 user/token）。
+        // GIT_TERMINAL_PROMPT=0 —— 未命中的 host 立刻认证失败退出，绝不交互挂起 claude。
+        ...(gitAskpassPath
+          ? { GIT_ASKPASS: gitAskpassPath, GIT_TERMINAL_PROMPT: '0' }
+          : {}),
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '500000',
         // 上游 429/网络错误时 claude 内部重试的最大次数；重试期间会话不中断，
         // 每次重试通过 system/api_retry 事件回传打字机。10 次全失败后 claude 才放弃。

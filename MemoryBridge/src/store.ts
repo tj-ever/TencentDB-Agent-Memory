@@ -20,6 +20,16 @@ export interface BotPolicy {
   dmAllowlist?: string[];
 }
 
+/** 单个 git 凭证（HTTPS+token）。host 匹配 git clone 的目标仓库域名，password 为 token/口令。 */
+export interface GitCredential {
+  id: string;
+  name: string;
+  /** 匹配的仓库 host，如 `code.choerodon.com.cn`。git 认证时按 prompt 里的 host 选这一张。 */
+  host: string;
+  username: string;
+  password: string;
+}
+
 export interface Bot {
   id: string;
   name: string;
@@ -30,12 +40,14 @@ export interface Bot {
   feishu: { app_id: string; app_secret: string; stream_initial_text: string; policy: BotPolicy };
   session_mode: SessionMode;
   system_prompt: string;
+  /** 机器人 git 凭证表（https+token，GIT_ASKPASS 注入）。 */
+  gits: GitCredential[];
   created_at: string;
   updated_at: string;
 }
 
-/** 面板/HTTP 提交的机器人配置：全部字段可缺省，密钥传掩码表示「保持原值」。 */
-export type BotInput = { [K in keyof Bot]?: Bot[K] extends object ? Partial<Bot[K]> : Bot[K] };
+/** 面板/HTTP 提交的机器人配置：全部字段可缺省，密钥传掩码表示「保持原值」。数组整体替换。 */
+export type BotInput = { [K in keyof Bot]?: Bot[K] extends unknown[] ? Bot[K] : Bot[K] extends object ? Partial<Bot[K]> : Bot[K] };
 
 interface RawStore { bots: Bot[]; }
 
@@ -97,11 +109,33 @@ export function publicBot(bot: Bot, status: BotStatus = 'stopped', error: string
     },
     session_mode: bot.session_mode,
     system_prompt: bot.system_prompt || '',
+    gits: (bot.gits || []).map((g) => ({ ...g, password: maskSecret(g.password) })),
     created_at: bot.created_at,
     updated_at: bot.updated_at,
     status,
     error,
   };
+}
+
+/**
+ * gits 凭证表合并：整体替换（面板传 [] = 清空），逐条按 id 复用；
+ * password 传掩码/空 → 保持前台原有的真实 token（与 app_secret 同款语义）。
+ */
+function normalizeGits(input: GitCredential[] | undefined, prev: GitCredential[] | undefined): GitCredential[] {
+  if (input === undefined) return prev ?? [];
+  const prevById = new Map((prev ?? []).map((g) => [g.id, g]));
+  return input.map((g) => {
+    const before = prevById.get(g.id);
+    return {
+      id: before?.id ?? `git-${randomBytes(4).toString('hex')}`,
+      name: String(g.name || before?.name || '').trim(),
+      host: String(g.host || before?.host || '').trim(),
+      username: String(g.username || before?.username || '').trim(),
+      password: (!g.password || g.password === SECRET_MASK || g.password.endsWith('****'))
+        ? before?.password ?? ''
+        : g.password,
+    };
+  });
 }
 
 function normalize(input: BotInput, prev: Bot | null): Bot {
@@ -140,6 +174,7 @@ function normalize(input: BotInput, prev: Bot | null): Bot {
     },
     session_mode: parseSessionMode(input.session_mode ?? prev?.session_mode ?? 'none'),
     system_prompt: input.system_prompt ?? prev?.system_prompt ?? '',
+    gits: normalizeGits(input.gits, prev?.gits),
     created_at: prev?.created_at || now(),
     updated_at: now(),
   };

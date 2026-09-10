@@ -17,7 +17,7 @@ import {
 } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { HelpCircleIcon } from 'tea-icons-react';
-import { channelsApi, type ChannelBot, type ChannelDraft } from '@/custom/api/channels';
+import { channelsApi, type ChannelBot, type ChannelDraft, type ChannelGitCred } from '@/custom/api/channels';
 import { SessionManager } from '@/custom/channels/SessionManager';
 import { tasksApi } from '@/lib/api/tasks';
 import { tea } from '@/lib/tea-bridge';
@@ -48,6 +48,10 @@ function HelpLabel({ text, help }: { text: string; help: string }) {
   );
 }
 
+/** 新凭证行的临时 id（后端遇到未知 id 会重新生成正式 id；这里只要保证 React key 唯一）。 */
+let gitSeq = 0;
+const newGitId = () => `git-new-${++gitSeq}`;
+
 const EMPTY: ChannelDraft = {
   name: '',
   work_dir: '',
@@ -61,6 +65,7 @@ const EMPTY: ChannelDraft = {
   },
   session_mode: 'none',
   system_prompt: '',
+  gits: [],
 };
 
 export function ChannelsPage() {
@@ -135,6 +140,8 @@ export function ChannelsPage() {
       feishu: { ...bot.feishu, app_secret: '' },
       session_mode: bot.session_mode,
       system_prompt: bot.system_prompt,
+      // 原 password 已是掩码；不改则原样提交（后端识别掩码=保持），改动则替换成新 token
+      gits: (bot.gits || []).map((g) => ({ ...g })),
     });
     setCreating(true);
   }
@@ -146,6 +153,8 @@ export function ChannelsPage() {
       const body: ChannelDraft = {
         ...form,
         binding: { ...form.binding, team_id: teamId },
+        // 只提交填了 host 的行（host 是匹配键；空行是用户加了没填的废行）
+        gits: form.gits.filter((g) => g.host.trim()),
       };
       if (editing) await channelsApi.update(editing.id, body);
       else await channelsApi.create(body);
@@ -156,6 +165,11 @@ export function ChannelsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  /** Git 凭证行内编辑（keyof ChannelGitCred 限制字段更新）。 */
+  function updateGit(i: number, patch: Partial<ChannelGitCred>) {
+    setForm({ ...form, gits: form.gits.map((g, gi) => (gi === i ? { ...g, ...patch } : g)) });
   }
 
   async function toggle(bot: ChannelBot) {
@@ -357,6 +371,52 @@ export function ChannelsPage() {
             </Form.Item>
             <Form.Item label={<HelpLabel text={t('channels.field.initialText')} help={t('channels.help.initialText')} />}>
               <Input value={form.feishu.stream_initial_text} onChange={(v) => setForm({ ...form, feishu: { ...form.feishu, stream_initial_text: v } })} />
+            </Form.Item>
+            <Form.Item label={<HelpLabel text={t('channels.gitCreds.title')} help={t('channels.gitCreds.desc')} />}>
+              <div style={{ width: '100%' }}>
+                {form.gits.map((g, i) => (
+                  <div key={g.id} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+                    <Input
+                      size="s"
+                      style={{ width: 120 }}
+                      placeholder={t('channels.gitCreds.name')}
+                      value={g.name}
+                      onChange={(v) => updateGit(i, { name: v })}
+                    />
+                    <Input
+                      size="s"
+                      style={{ width: 220 }}
+                      placeholder={t('channels.gitCreds.host')}
+                      value={g.host}
+                      onChange={(v) => updateGit(i, { host: v })}
+                    />
+                    <Input
+                      size="s"
+                      style={{ width: 120 }}
+                      placeholder={t('channels.gitCreds.username')}
+                      value={g.username}
+                      onChange={(v) => updateGit(i, { username: v })}
+                    />
+                    <Input
+                      type="password"
+                      size="s"
+                      style={{ width: 180 }}
+                      placeholder={t('channels.gitCreds.password')}
+                      value={g.password}
+                      onChange={(v) => updateGit(i, { password: v })}
+                    />
+                    <Button
+                      type="link"
+                      icon="delete"
+                      onClick={() => setForm({ ...form, gits: form.gits.filter((_, gi) => gi !== i) })}
+                      tooltip={t('channels.gitCreds.remove')}
+                    />
+                  </div>
+                ))}
+                <Button type="link" icon="plus" onClick={() => setForm({ ...form, gits: [...form.gits, { id: newGitId(), name: '', host: '', username: '', password: '' }] })}>
+                  {t('channels.gitCreds.add')}
+                </Button>
+              </div>
             </Form.Item>
             <Form.Item label={<HelpLabel text={t('channels.field.requireMention')} help={t('channels.help.requireMention')} />}>
               <Switch

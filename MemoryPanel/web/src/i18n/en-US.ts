@@ -1437,6 +1437,14 @@ export const enUS = {
   'channels.help.requireMention': 'When on, the bot only replies in groups when @mentioned; DMs are unaffected.',
   'channels.help.initialText': 'Prompt text sent before the real reply. Default: "Thinking…".',
   'channels.help.systemPrompt': 'Custom system prompt, overrides the built-in generic rules. Leave empty for the default.',
+  'channels.gitCreds.title': 'Git credentials',
+  'channels.gitCreds.desc': 'When the bot runs git clone/pull against an https repo in chat, it authenticates per repo host automatically (GIT_ASKPASS). One entry per repo host + username + token.',
+  'channels.gitCreds.name': 'Name',
+  'channels.gitCreds.host': 'Repo host',
+  'channels.gitCreds.username': 'Username',
+  'channels.gitCreds.password': 'Token',
+  'channels.gitCreds.add': '+ Add credential',
+  'channels.gitCreds.remove': 'Remove',
 
   // Create and allocate assets (same for Admin and Member; each asset page is visited.
   // Each description follows "what it is → how to import → how to use" for first-time users)
