@@ -4,18 +4,32 @@ import { fileURLToPath } from 'node:url';
 import { createLarkChannel, defaultLogger, LoggerLevel, type LarkChannel } from '@larksuiteoapi/node-sdk';
 import { createClaudeRunner, type ClaudeRunner } from './claudeRunner.js';
 import { extractDriveFiles, openDocsFromText, rewriteFeishuHost } from './docShare.js';
-import { runWithRotatingMarkdown } from './streamRotate.js';
+import { interjectStream, runWithRotatingMarkdown } from './streamRotate.js';
 import { resolveSessionId, SESSION_MODE_LABEL } from './sessionMode.js';
 import { getBot, listBots, updateBot, type Bot, type BotStatus } from './store.js';
 import { enqueue, dequeue, loadQueue, type PendingMsg } from './messageQueue.js';
 import { clearBotSession as clearSession, listBotSessions, rememberSessionUser, type SessionMeta } from './sessionManager.js';
 import { writeAskpassScript, removeAskpassScript } from './gitCreds.js';
+import { getBridgeConfig } from './bridgeConfig.js';
 
 const running = new Map<string, { channel: LarkChannel | null; error: string | null; abort?: () => boolean }>();
 
 // 会话重置指令（整条消息只有指令本身才算，正文里提到不算）。
-const RESET_CMD_RE = /^\/?(?:重置|清空|reset|clear)(?:会话|上下文|对话|session|context)?$|^\/?(?:重新开始|新对话|新会话)$/i;
+// 默认指令词；bridge-config.json 可配 reset_commands 覆盖（构建正则 alternative）。
+const RESET_CMD_DEFAULT_RE = /^\/?(?:重置|清空|reset|clear)(?:会话|上下文|对话|session|context)?$|^\/?(?:重新开始|新对话|新会话)$/i;
 const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 由配置 reset_commands 构建重置指令正则；未配置时回退默认。 */
+function resetCmdRe(): RegExp {
+  const cmds = getBridgeConfig().reset_commands;
+  if (!cmds || cmds.length === 0 || !cmds.some((c) => c.trim())) return RESET_CMD_DEFAULT_RE;
+  const alt = cmds.filter((c) => c.trim()).map(escapeRegExp).join('|');
+  return new RegExp(`^\\/?(?:${alt})(?:会话|上下文|对话|session|context)?$|^\\/?(?:重新开始|新对话|新会话)$`, 'i');
+}
 
 // 帮助指令：能力边界 + 用法一句话。业务人员不读文档，指令自解释是唯一触达路径。
 const HELP_CMD_RE = /^\/?(?:help|帮助|怎么用|使用说明|你能做什么|你能干什么)$/i;
@@ -30,6 +44,11 @@ const HELP_TEXT = [
   '• 发「重置会话」让我忘掉之前对话，重新开始',
   '• 生成大文档耗时较长（10-40 分钟），期间卡片会报进度，请勿重复发送',
 ].join('\n');
+
+/** 帮助文案：bridge-config.json 可配 help_text 覆盖默认（未配置 → 默认）。 */
+function helpText(): string {
+  return getBridgeConfig().help_text ?? HELP_TEXT;
+}
 
 // 已介绍过的用户（每 bot 一份，data/introduced-<botid>.json）——首条消息自动自我介绍。
 function introducedPath(botId: string): string {
@@ -121,7 +140,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     if (!supportsImages && p.image) {
       console.log(`[${bot.id}] 忽略图片消息(模型不支持识图) msg=${p.id} user=${p.senderId}`);
       try {
-        await channel.send(p.chatId, { markdown: '当前模型不支持识图，暂无法处理图片，请改用文字描述。' }, { replyTo: p.id });
+        await channel.send(p.chatId, { markdown: getBridgeConfig().image_reject_reply ?? '当前模型不支持识图，暂无法处理图片，请改用文字描述。' }, { replyTo: p.id });
       } catch (err) { console.error(`[${bot.id}] 图片拒绝回复失败`, err instanceof Error ? err.message : String(err)); }
       return;
     }
@@ -233,10 +252,11 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
 
     // 会话重置指令：清掉本会话文件，下一条消息全新开始（否则按人续聊会让用户
     // 感觉「机器人记着旧账」，只能去面板清）。整条指令消息不进生成队列。
-    if (RESET_CMD_RE.test(String(msg.content ?? '').trim())) {
+    if (resetCmdRe().test(String(msg.content ?? '').trim())) {
       const ok = sid ? clearSession(bot, sid) : false;
+      const cfg = getBridgeConfig();
       const text = sid
-        ? (ok ? '✅ 已清空会话上下文，下一条消息开始全新对话。' : '当前没有可清空的会话记录。')
+        ? (ok ? (cfg.reset_reply_success ?? '✅ 已清空会话上下文，下一条消息开始全新对话。') : (cfg.reset_reply_empty ?? '当前没有可清空的会话记录。'))
         : '当前是逐条新开模式，本来就没有会话上下文。';
       try {
         await channel.send(msg.chatId, { markdown: text }, { replyTo: msg.messageId });
@@ -247,7 +267,7 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     // 帮助指令：不进生成队列，直接回能力说明。
     if (HELP_CMD_RE.test(String(msg.content ?? '').trim())) {
       try {
-        await channel.send(msg.chatId, { markdown: HELP_TEXT }, { replyTo: msg.messageId });
+        await channel.send(msg.chatId, { markdown: helpText() }, { replyTo: msg.messageId });
       } catch (err) { console.warn(`[${bot.id}] help 回复失败`, err instanceof Error ? err.message : String(err)); }
       return;
     }
@@ -256,8 +276,14 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     if (!isIntroduced(bot.id, msg.senderId)) {
       markIntroduced(bot.id, msg.senderId);
       try {
-        await channel.send(msg.chatId, { markdown: HELP_TEXT }, { replyTo: msg.messageId });
+        await channel.send(msg.chatId, { markdown: helpText() }, { replyTo: msg.messageId });
       } catch (err) { console.warn(`[${bot.id}] 介绍发送失败`, err instanceof Error ? err.message : String(err)); }
+    }
+
+    // 生成中收到新消息：往当前流式卡片插一行提示，让用户知道消息已被看到、排在后面。
+    // （currentMsgId 为空说明只是队列间隙，无需打扰。）
+    if (pumping && currentMsgId && currentMsgId !== msg.messageId) {
+      await interjectStream(msg.chatId, '（已收到新消息，完成后处理）');
     }
 
     enqueue(bot.id, {
@@ -275,9 +301,11 @@ function attach(bot: Bot, channel: LarkChannel, claude: ClaudeRunner, supportsIm
     if (pending.length > 2 && !queueNoticeSent) {
       queueNoticeSent = true;
       try {
+        const tpl = getBridgeConfig().queue_notice_template
+          ?? '⏳ 你的消息已收到，前面还有 {n} 条在排队处理（逐条串行回复）。请勿重复发送，稍候即可。';
         await channel.send(
           msg.chatId,
-          { markdown: `⏳ 你的消息已收到，前面还有 ${pending.length - 1} 条在排队处理（逐条串行回复）。请勿重复发送，稍候即可。` },
+          { markdown: tpl.replace('{n}', String(pending.length - 1)) },
           { replyTo: msg.messageId },
         );
       } catch (err) { console.warn(`[${bot.id}] 排队提示失败`, err instanceof Error ? err.message : String(err)); }

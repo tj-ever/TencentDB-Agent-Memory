@@ -19,6 +19,15 @@ export interface StreamCtl {
   setContent: (full: string) => Promise<unknown>;
 }
 
+// 生成中的卡片插话口：runtime 在同会话收到新消息时往当前卡片补一行提示，
+// 让用户知道 bot 看到了消息、排队在后面。仅生成中的会话有口，其余静默忽略。
+const liveStreams = new Map<string, (text: string) => Promise<unknown>>();
+export async function interjectStream(to: string, text: string): Promise<void> {
+  const fn = liveStreams.get(to);
+  if (!fn) return;
+  try { await fn(text); } catch { /* 插话失败不影响主回复 */ }
+}
+
 export async function runWithRotatingMarkdown<T>(
   channel: LarkChannel,
   to: string,
@@ -42,6 +51,29 @@ export async function runWithRotatingMarkdown<T>(
   let finished = false;
   let gate: Promise<unknown> = Promise.resolve();
   let cards = 0;
+  // 行安全缓冲：飞书 cardkit 流式按增量解析 markdown，append 边界若把 ``` 围栏
+  // 劈成两半，服务端会吞掉围栏 token（实测：开栏行被吃、卡片冒出 plain_text 幽灵块，
+  // 用户看到 SQL 代码块缺开头）。正文只按完整行放行（换行边界切不开围栏行）；
+  // 一行长文无换行积压超过 300 字符时兜底放行，但绝不从反引号串中间切开。
+  let lineBuf = '';
+  function drainBuffer(write: (c: MarkdownStreamController, text: string) => Promise<void>, force = false): Promise<unknown> {
+    if (!lineBuf) return Promise.resolve();
+    const nl = lineBuf.lastIndexOf('\n');
+    let cut: number;
+    if (force) {
+      cut = lineBuf.length;   // 收尾/轮换：缓冲即最终文本，全量放行
+    } else if (nl >= 0) {
+      cut = nl + 1;
+    } else if (lineBuf.length > 300) {
+      cut = lineBuf.length;
+      while (cut > 0 && lineBuf[cut - 1] === '`') cut--;  // 尾部疑似半个围栏，扣住
+    } else {
+      return Promise.resolve();
+    }
+    const out = lineBuf.slice(0, cut);
+    lineBuf = lineBuf.slice(cut);
+    return withCard(out, write);
+  }
 
   function enqueue(fn: () => Promise<unknown>): Promise<unknown> {
     const run = gate.then(fn, fn);
@@ -101,6 +133,8 @@ export async function runWithRotatingMarkdown<T>(
     if (finished || ac.signal.aborted) return;
     if (timer) clearTimer(timer);
     timer = null;
+    // 轮换收卡前把缓冲里的残行灌进当前卡，避免丢尾
+    try { await drainBuffer((c, t) => c.append(t), true); } catch { /* ignore */ }
     if (release) release();
     release = null;
     ctl = null;
@@ -126,13 +160,18 @@ export async function runWithRotatingMarkdown<T>(
     signal: ac.signal,
     append: (chunk) => {
       lastAppend = now();
-      return enqueue(() => withCard(chunk, (c, text) => c.append(text)));
+      return enqueue(async () => {
+        lineBuf += chunk;
+        await drainBuffer((c, text) => c.append(text));
+      });
     },
     setContent: (full) => {
       lastAppend = now();
+      lineBuf = '';   // 全量替换已含缓冲内容，直接清掉
       return enqueue(() => withCard(full, (c, text) => c.setContent(text)));
     },
   };
+  liveStreams.set(to, (text) => enqueue(() => withCard(`\n\n_${text}_\n\n`, (c, t) => c.append(t))));
 
   try {
     return await work(wrapper);
@@ -146,15 +185,18 @@ export async function runWithRotatingMarkdown<T>(
     await enqueue(async () => {
       try {
         if (!ctl) await openCard();
+        await drainBuffer((c, t) => c.append(t), true).catch(() => {});
         await ctl?.append(tail);
       } catch { /* ignore */ }
     });
     throw err;
   } finally {
-    finished = true;
     if (timer) clearTimer(timer);
     if (hbTimer) clearTimer(hbTimer);
+    liveStreams.delete(to);
     await enqueue(async () => {
+      try { await drainBuffer((c, t) => c.append(t), true); } catch { /* ignore */ }
+      finished = true;
       if (release) release();
       if (streamDone) await streamDone.catch(() => {});
     });

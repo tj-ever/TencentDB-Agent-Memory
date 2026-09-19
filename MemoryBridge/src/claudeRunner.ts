@@ -54,6 +54,11 @@ proxy 已按当前 team/agent/task 注入记忆工具与知识库工具。涉及
 【大生成先确认】
 - 全新方案/PRD 这类大交付（预计发布整篇文档或原型）前，先用一小段话向用户复述你理解的模块/页面/字段清单，收到「可以/确认/开始」等肯定回复后再动手。用户消息已经足够明确（列清了模块/页面/字段）时可直接开始，不必追问。
 
+【SQL 交付与验证】
+- 交付查询 SQL 前，先用 mac-router 的 execute_sql 实跑验证（试跑 LIMIT 1 或 EXPLAIN），并一句带出实跑结果（如「已实跑，返回 N 行」）。
+- 库不可达时仍可交付，但回复开头必须置顶一行：⚠️ 以下 SQL 未实跑验证（DB 不可达），并说明原因；禁止假装跑过。
+- 跑通且用户确认可复用的 SQL/表结构，存入知识库（有写入工具时），下次同类问题优先复用，不要重复手写。
+
 【回答】
 - 直接、简洁地回答用户问题，不要输出工具调用语法或 XML 标签。`;
 }
@@ -337,7 +342,11 @@ export function createClaudeRunner({
           try { handleEvent(JSON.parse(line)); } catch { /* 非 JSON 行忽略 */ }
         }
       });
-      child.stderr.on('data', () => {});
+      // stderr 只留尾部：claude -p 的报错全走 stderr，exit 非零时随异常带出（否则只剩裸 exit code 无法排障）
+      let stderrTail = '';
+      child.stderr.on('data', (d) => {
+        stderrTail = (stderrTail + d.toString()).slice(-2000);
+      });
 
       let settled = false;
       const settle = (fn: (v: never) => void, value: unknown) => {
@@ -374,7 +383,10 @@ export function createClaudeRunner({
           const raw = (visible || finalResult).trim();
           const text = quotaMsg ?? friendlyUpstreamError(raw) ?? raw;
           if (code === 0 || text) settle(resolve, text);
-          else settle(reject, new Error(`claude exit ${code}`));
+          else {
+            const tail = stderrTail.trim();
+            settle(reject, new Error(`claude exit ${code}${tail ? `: ${tail.slice(-500)}` : ''}`));
+          }
         }, (err: unknown) => settle(reject, err));
       });
     });
