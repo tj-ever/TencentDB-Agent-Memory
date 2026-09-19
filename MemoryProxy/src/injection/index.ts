@@ -101,6 +101,7 @@ export {
 // ── Pipeline Factory ──────────────────────────────────────────────────────────
 
 import os from "os";
+import { getCapabilityStore } from "../custom/capability-store.js";
 import type { ProxyConfig } from "../types.js";
 import { InjectionPipeline } from "./pipeline.js";
 import { HookRegistryImpl } from "./registry.js";
@@ -248,6 +249,8 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
   const adapters = new Map<string, ProtocolAdapter>();
   adapters.set("openai", new OpenAIAdapter());
   adapters.set("anthropic", new AnthropicAdapter());
+  // 二开能力中心话术覆盖（进程内存态，panel PUT 时整体替换并清 hook cache）。
+  const capStore = getCapabilityStore();
 
   // Register configured injectors. Each injector reads its own kernel config
   // (`coreSkill`, `tdai`, ...); there is no shared external endpoint anymore.
@@ -300,14 +303,14 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // When coreSkill is unconfigured (no serviceToken), the searchSkills call
     // will fail and the injector silently degrades to no <cloud_skills> block.
     registry.register(
-      new SkillInjector({ coreSkill: config.coreSkill }),
+      new SkillInjector({ coreSkill: config.coreSkill, capStore }),
     );
 
     // Always inject the curl-recipe `<skill_tools>` block alongside the
     // dynamic `<cloud_skills>` block. Even when there are no skills to
     // recommend, the LLM still needs to know how to create / search them.
     const allowLlmWrite = config.skillRuntime?.allowLlmWrite ?? false;
-    registry.register(new SkillToolsInjector({ proxyBaseUrl: proxyBaseUrl!, allowLlmWrite }));
+    registry.register(new SkillToolsInjector({ proxyBaseUrl: proxyBaseUrl!, allowLlmWrite, capStore }));
   }
 
   if (injectors.includes("knowledge")) {
@@ -317,6 +320,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     if (shouldRegisterKnowledgeInjector(config)) {
       registry.register(new KnowledgeToolsInjector({
         coreSkill: config.knowledge,
+        capStore,
       }));
     }
   }
@@ -341,7 +345,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // fixed-asset-agents（self + 借入≤2）通过内核 MetadataClient 获取；
     // 内核不可达时 injector 自动降级为"只查当前 agent 的记忆"。
     if (config.tdai.memory.injectL2L3) {
-      registry.register(new TdaiProfileMemoryInjector(tdaiBaseConfig, config.coreSkill));
+      registry.register(new TdaiProfileMemoryInjector(tdaiBaseConfig, config.coreSkill, capStore));
     }
     // 注意：L0/L1 不再每轮自动召回注入到 user prompt（会破坏 KV/prompt cache）。
     // 改为只在 system prompt 暴露只读工具（见 TdaiToolsInjector），借助 system
@@ -350,7 +354,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // <proxy>/memory-bridge/v3/* 调用只读工具。proxy 自动注入身份。
     // proxyBaseUrl 复用 skill-tools-injector 算出来的（同一 host:port）。
     if (typeof proxyBaseUrl !== "undefined") {
-      registry.register(new TdaiToolsInjector({ proxyBaseUrl }));
+      registry.register(new TdaiToolsInjector({ proxyBaseUrl, capStore }));
     }
   }
 

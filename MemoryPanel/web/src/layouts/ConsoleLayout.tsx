@@ -28,6 +28,7 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/team/api-keys': 'api_keys',
   '/team/feishu-bots': 'feishu_bots',
   '/system/system-config': 'system_config',
+  '/system/custom-capabilities': 'custom_capabilities',
 };
 
 /** PageId → 路由 path */
@@ -143,7 +144,7 @@ export function ConsoleLayout() {
 
     for (const meta of Object.values(PAGE_META)) {
       if (userRole === 'reviewer' && meta.id === 'team_members') continue;
-      if (meta.id === 'system_config' && userRole !== 'admin') continue;
+      if ((meta.id === 'system_config' || meta.id === 'custom_capabilities') && userRole !== 'admin') continue;
       const list = byGroup.get(meta.group) ?? [];
       list.push(meta);
       byGroup.set(meta.group, list);

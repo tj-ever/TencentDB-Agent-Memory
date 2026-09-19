@@ -37,6 +37,7 @@ import type {
   PrewarmInput,
 } from "../types.js";
 import { HOOK_PRIORITY } from "../types.js";
+import type { CapabilityStore } from "../../custom/capability-store.js";
 
 export interface SkillToolsInjectorConfig {
   /**
@@ -50,6 +51,8 @@ export interface SkillToolsInjectorConfig {
    * 显式设为 true 后注入全部 10 个工具。
    */
   allowLlmWrite?: boolean;
+  /** 二开能力中心话术覆盖（可选）；命中则整块替换默认渲染。 */
+  capStore?: CapabilityStore;
 }
 
 /**
@@ -61,7 +64,10 @@ export function renderSkillToolsBlock(
   allowLlmWrite = true,
   sessionId?: string,
   spaceId?: string,
+  /** 二开能力中心覆盖文本：非空时整块替换默认渲染。 */
+  overrideBlock?: string,
 ): string {
+  if (overrideBlock) return overrideBlock;
   const base = proxyBaseUrl.replace(/\/$/, "");
   const bridge = `${base}/skill-bridge/v3/skill`;
 
@@ -217,6 +223,8 @@ export class SkillToolsInjector implements InjectionHook {
 
   private renderBlocks(ctx?: AgentContext, prewarmSessionId?: string, prewarmSpaceId?: string): ContextBlock[] {
     const allowLlmWrite = this.config.allowLlmWrite ?? false;
+    const override = this.config.capStore?.getCapability("skill-tools-injector:block");
+    const overrideBlock = override?.enabled && override.text ? override.text : undefined;
 
     let sessionId = prewarmSessionId;
     let spaceId = prewarmSpaceId;
@@ -233,7 +241,7 @@ export class SkillToolsInjector implements InjectionHook {
       }
     }
 
-    const content = renderSkillToolsBlock(this.config.proxyBaseUrl, allowLlmWrite, sessionId, spaceId);
+    const content = renderSkillToolsBlock(this.config.proxyBaseUrl, allowLlmWrite, sessionId, spaceId, overrideBlock);
     return [{
       type: "text",
       content,

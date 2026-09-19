@@ -120,4 +120,21 @@ export class RedisHookCacheRepo implements HookCacheRepo {
   ): Promise<void> {
     await this.redis.del(keyOf(spaceId, userId, agentSource, sessionId)).catch(() => {});
   }
+
+  async clearAll(): Promise<void> {
+    try {
+      // 全部 hook cache key（前缀 inj:hook:）一次扫出批量删；scan 游标避免
+      // keys() 在全量 key 下阻塞。
+      const stream = this.redis.scanStream({ match: `${KEY_PREFIX}*`, count: 100 });
+      const keys: string[] = [];
+      for await (const chunk of stream) {
+        keys.push(...(chunk as string[]));
+      }
+      if (keys.length > 0) {
+        await this.redis.del(...keys).catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 }

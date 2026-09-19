@@ -12,6 +12,8 @@ import { createMemoryBridgeHandler } from "./memory/memory-bridge.js";
 import { createInstanceDestroyHandler } from "./routes/instance-destroy.js";
 import { createRateLimitHandlers } from "./routes/rate-limits.js";
 import { createUpstreamConfigHandlers } from "./custom/routes/upstream-config.js";
+import { createCustomCapabilitiesHandlers } from "./custom/routes/custom-capabilities.js";
+import { initCapabilityStore } from "./custom/capability-store.js";
 import { hasAnalyseMarker, hasCostGuardMarker } from "./routes/whitelist.js";
 import { tryActivateStorage, tryActivateRedis } from "./injection/index.js";
 import { getEffectiveBackend } from "./storage/factory.js";
@@ -27,6 +29,9 @@ export function createApp(config: ProxyConfig): Hono {
   if (!tryActivateStorage(config)) {
     tryActivateRedis(config);
   }
+
+  // 二开能力中心话术覆盖：启动即加载磁盘配置（无文件 → 空表 → 注入器走代码默认）。
+  initCapabilityStore(process.env.CUSTOM_CAPABILITIES_PATH);
 
   // `/cost-guard` marker 门控 (P0 前置)：
   // markerOptIn=false 时 marker 完全作废——任何路径里带 `/cost-guard/` 段的请求
@@ -148,6 +153,11 @@ export function createApp(config: ProxyConfig): Hono {
   const upstreamHandlers = createUpstreamConfigHandlers(config);
   app.get("/v3/config/upstream", upstreamHandlers.get);
   app.put("/v3/config/upstream", upstreamHandlers.put);
+
+  // ── 二开能力中心（话术覆盖 GET/PUT，PUT 时清 hook cache 让新话术即时生效）──
+  const capabilityHandlers = createCustomCapabilitiesHandlers(config);
+  app.get("/v3/config/custom-capabilities", capabilityHandlers.get);
+  app.put("/v3/config/custom-capabilities", capabilityHandlers.put);
 
   // ── Session management endpoints (mem: command 底层接口, 面板前端可复用) ──
   app.post("/v3/session/refresh-cache", (c) => {

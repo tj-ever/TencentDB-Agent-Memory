@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { listBots, getBot, createBot, updateBot, deleteBot, publicBot, type Bot, type BotInput } from './store.js';
 import { startBot, stopBot, statusOf, getBotSessionState, abortBotTask, clearBotSession } from './runtime.js';
+import { getBridgeConfig, setBridgeConfig } from './bridgeConfig.js';
 
 // 管理 API 门禁：设置 BRIDGE_ADMIN_TOKEN 后，除 /health 外全部要求 x-bridge-token 匹配。
 // 不设时放行并告警（本地裸跑开发场景）；部署脚本会生成 .bridge-token 并注入两容器。
@@ -54,6 +55,15 @@ export function createBridgeServer() {
     if (!authorized(req)) return send(res, 401, { code: 401, message: 'unauthorized', request_id: '', data: null });
 
     try {
+      // ── 二开能力中心：桥接行为配置（重置指令/help/排队/图片拒收文案）──
+      if (req.method === 'GET' && pathname === '/api/config') {
+        return envelope(res, 200, 0, 'ok', getBridgeConfig());
+      }
+      if (req.method === 'PUT' && pathname === '/api/config') {
+        const input = (await readBody(req)) as Record<string, unknown>;
+        return envelope(res, 200, 0, 'ok', setBridgeConfig(input));
+      }
+
       if (req.method === 'GET' && pathname === '/api/bots') {
         const teamId = url.searchParams.get('team_id');
         let bots = listBots();

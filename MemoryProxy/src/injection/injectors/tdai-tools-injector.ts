@@ -43,6 +43,7 @@ import type {
 } from "../types.js";
 import { HOOK_PRIORITY } from "../types.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
+import type { CapabilityStore } from "../../custom/capability-store.js";
 
 export interface TdaiMemoryToolsInjectorConfig {
   /**
@@ -50,6 +51,8 @@ export interface TdaiMemoryToolsInjectorConfig {
    * E.g. `http://127.0.0.1:8096`. Trailing slash trimmed.
    */
   proxyBaseUrl: string;
+  /** 二开能力中心话术覆盖（可选）；命中则整块替换默认渲染。 */
+  capStore?: CapabilityStore;
 }
 
 /** 渲染整段 `<tdai_memory_tools>` 文本，纯函数便于测试。 */
@@ -57,7 +60,10 @@ export function renderTdaiMemoryToolsBlock(
   proxyBaseUrl: string,
   sessionId?: string,
   spaceId?: string,
+  /** 二开能力中心覆盖文本：非空时整块替换默认渲染。 */
+  overrideBlock?: string,
 ): string {
+  if (overrideBlock) return overrideBlock;
   const base = proxyBaseUrl.replace(/\/$/, "");
   const bridge = `${base}/memory-bridge/v3`;
   // gateway 需要 `x-tdai-service-id: <spaceId>` 才放行；`x-conversation-id`
@@ -170,9 +176,11 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   }
 
   private renderBlocks(sessionId: string, spaceId?: string): ContextBlock[] {
+    const override = this.cfg.capStore?.getCapability("tdai-tools-injector:block");
+    const overrideBlock = override?.enabled && override.text ? override.text : undefined;
     return [{
       type: "text",
-      content: renderTdaiMemoryToolsBlock(this.cfg.proxyBaseUrl, sessionId, spaceId),
+      content: renderTdaiMemoryToolsBlock(this.cfg.proxyBaseUrl, sessionId, spaceId, overrideBlock),
       metadata: {
         source: this.id,
         sessionId,

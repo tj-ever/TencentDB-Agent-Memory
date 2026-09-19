@@ -6,6 +6,7 @@ import { getTdaiIdentity } from "../../tdai/identity.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs, type FixedAssetCtx } from "./tdai-fixed-asset.js";
+import type { CapabilityStore } from "../../custom/capability-store.js";
 
 /**
  * L2/L3 注入（按 openclaw / hermes 官方做法重构）：
@@ -41,7 +42,14 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
   constructor(
     private baseConfig: TdaiMemoryConfig,
     private coreSkillCfg: Pick<CoreSkillConfig, "endpoint" | "serviceToken" | "serviceId" | "timeoutMs"> | null = null,
+    private capStore?: CapabilityStore,
   ) {}
+
+  /** 记忆使用指南话术：二开能力中心可整块覆盖（覆盖时替换默认 MEMORY_TOOLS_GUIDE）。 */
+  private get guide(): string {
+    const o = this.capStore?.getCapability("tdai-profile-memory-injector:block");
+    return o?.enabled && o.text ? o.text : MEMORY_TOOLS_GUIDE;
+  }
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
     const caps = ctx.metadata.custom?.assetCapabilities as { chat_memory?: boolean } | undefined;
@@ -84,7 +92,7 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
     if (!hasAnything) {
       return [{
         type: "text",
-        content: MEMORY_TOOLS_GUIDE,
+        content: this.guide,
         metadata: { source: this.id, agentCount: 0, l3Count: 0, l2Count: 0, mode: "tools-only" },
       }];
     }

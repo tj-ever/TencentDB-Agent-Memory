@@ -19,7 +19,9 @@ export const enUS = {
   'menu.group.assets': 'Asset Management',
   'menu.group.system': 'System',
   'menu.system_config': 'Developer Config',
+  'menu.custom_capabilities': 'Custom Capabilities Center',
   'menu.desc.system_config': 'Manage developer upstreams per team (proxy routing)',
+  'menu.desc.custom_capabilities': 'Configurable secon-dev talks / bridge behaviors + program docs',
   'menu.desc.workbench_board': 'Task list / create / detail',
   'menu.desc.wiki': 'Sources / graph / pages / search',
   'menu.desc.code': 'Repos / index / search / explore',
@@ -1645,4 +1647,18 @@ export const enUS = {
   'guide.manual.note.openclaw.0': 'Header preselect required: team-id / agent-id / task-id / conversation-id',
   'guide.manual.note.openclaw.1': 'x-conversation-id identifies the current session — change it for each new conversation',
   'guide.manual.note.openclaw.2': 'x-task-id is required in the current version; use "no-task" when there is none',
+
+  // ===== Custom Capabilities Center =====
+  'capabilities.title': 'Custom Capabilities Center',
+  'capabilities.desc': 'Centrally manage custom injection talk blocks and bridge interaction behaviors. Non-configurable features are documented under "Program Docs". Saving a talk override clears the proxy"s cached injection blocks — the next message uses the new text.',
+  'capabilities.tab.talk': 'Talk Blocks (Proxy)',
+  'capabilities.tab.bridge': 'Bridge Behaviors',
+  'capabilities.tab.docs': 'Program Docs',
+  'capabilities.save': 'Save',
+  'capabilities.reset': 'Restore Default',
+  'capabilities.saved': 'Saved and effective',
+  'capabilities.restored': 'Restored to built-in default',
+  'capabilities.configured': 'Overridden',
+  'capabilities.default': 'Using built-in default',
+  'capabilities.textareaPlaceholder': 'Leave empty and save to restore the built-in default',
 };

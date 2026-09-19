@@ -19,7 +19,9 @@ export const zhCN = {
   'menu.group.assets': '资产管理',
   'menu.group.system': '系统',
   'menu.system_config': '开发者配置',
+  'menu.custom_capabilities': '二开能力中心',
   'menu.desc.system_config': '按团队管理开发者上游（Proxy 分流）',
+  'menu.desc.custom_capabilities': '二开话术/桥接行为可配 + 程序说明',
   'menu.desc.workbench_board': 'Task 列表 / 创建 / 详情',
   'menu.desc.wiki': '来源 / 图谱 / 页面 / 搜索',
   'menu.desc.code': '仓库 / 索引 / 搜索 / 探索',
@@ -1607,4 +1609,18 @@ export const zhCN = {
   'guide.manual.note.openclaw.0': '需 Header 预选：team-id / agent-id / task-id / conversation-id',
   'guide.manual.note.openclaw.1': 'x-conversation-id 标识当前会话，每次新对话需手动更换',
   'guide.manual.note.openclaw.2': 'x-task-id 当前版本必填，无 Task 可填 no-task',
+
+  // ===== 二开能力中心 =====
+  'capabilities.title': '二开能力中心',
+  'capabilities.desc': '面板集中管理二开注入话术与桥接交互行为；不可配置的功能在「程序说明」Tab 以文档展示。保存话术覆盖后 proxy 会清空已缓存注入块，下一条消息即用新话术。',
+  'capabilities.tab.talk': '对话话术（Proxy 注入）',
+  'capabilities.tab.bridge': '桥接行为（Bridge）',
+  'capabilities.tab.docs': '程序说明',
+  'capabilities.save': '保存',
+  'capabilities.reset': '恢复默认',
+  'capabilities.saved': '已保存并生效',
+  'capabilities.restored': '已恢复代码内置默认',
+  'capabilities.configured': '已覆盖',
+  'capabilities.default': '使用代码内置默认',
+  'capabilities.textareaPlaceholder': '留空保存=恢复代码内置默认',
 };

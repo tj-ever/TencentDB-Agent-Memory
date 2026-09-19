@@ -59,6 +59,8 @@ export interface HookCacheRepo {
     agentSource: string,
     sessionId: string,
   ): void | Promise<void>;
+  /** 清空全部已缓存注入块（配置话术覆盖后让新话术立即生效）。 */
+  clearAll(): void | Promise<void>;
 }
 
 /** Sqlite 后端下用的复合 session id —— 与 SessionRepo 一致，多加一段 spaceId. */
@@ -204,6 +206,17 @@ class SqliteHookCacheRepo implements HookCacheRepo {
       /* ignore */
     }
   }
+
+  clearAll(): void {
+    try {
+      this.db.prepare("DELETE FROM hook_cache").run();
+    } catch (err) {
+      console.warn(
+        "[hook-cache] clearAll failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 }
 
 class NullHookCacheRepo implements HookCacheRepo {
@@ -216,6 +229,7 @@ class NullHookCacheRepo implements HookCacheRepo {
     return [];
   }
   clearBySession(): void {}
+  clearAll(): void {}
 }
 
 let _repo: HookCacheRepo | null = null;

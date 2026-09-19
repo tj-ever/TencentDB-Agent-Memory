@@ -37,12 +37,15 @@ import {
   type KnowledgeItem,
 } from "../../knowledge/core-client.js";
 import type { CoreSkillConfig } from "../../types.js";
+import type { CapabilityStore } from "../../custom/capability-store.js";
 
 const TAG = "[knowledge-tools-injector]";
 
 export interface KnowledgeToolsInjectorConfig {
   /** Core kernel config (same endpoint as skill — 8420). */
   coreSkill: CoreSkillConfig;
+  /** 二开能力中心话术覆盖（可选）；命中则整块替换默认渲染。 */
+  capStore?: CapabilityStore;
 }
 
 export interface KnowledgeTelemetryContext {
@@ -136,12 +139,36 @@ function deriveRepoSlug(repoUrl: string | undefined): string | undefined {
   return slug.length > 0 ? slug : undefined;
 }
 
+/**
+ * 渲染「已绑定资源」标签段（`<knowledge type=... />` 列表）。独立导出供
+ * 二开能力中心的整块覆盖做 `{resources}` 占位替换。
+ */
+export function renderResourceTags(resources: KnowledgeItem[]): string {
+  return resources
+    .map((r) => {
+      // `match` 是 code-graph 的锚点判定依据：agent 拿它比对当前工作区的 git
+      // remote，命中才调用。优先用后端下发的 repo_slug；缺失时从 repo_url 降级
+      // 提取 `<org>/.../<repo>`。wiki 无 repo，不渲染该属性。
+      const matchAttr = attr("match", r.repo_slug ?? deriveRepoSlug(r.repo_url));
+      const branchAttr = attr("branch", r.repo_url ? (r.branch ?? "main") : undefined);
+      // wiki 的 summary 是 LLM 依据页面标题生成的内容概述，是 agent 判断"该不该
+      // 查这个 wiki"的唯一线索，必须保留。code-graph 的 summary 只是
+      // "N 个文件、M 个符号节点"一类计数，对调用决策无帮助，不注入。
+      const summaryAttr = r.type === "wiki" ? attr("about", r.summary) : "";
+      return `<knowledge type="${r.type}" id="${r.knowledge_id}"\n  url="${r.service_url}"\n  name="${xmlAttrEscape(r.name)}"${matchAttr}${branchAttr}${summaryAttr} />`;
+    })
+    .join("\n\n");
+}
+
 export function renderKnowledgeToolsBlock(
   resources: KnowledgeItem[],
   serviceId: string,
   telemetryContext: KnowledgeTelemetryContext = {},
+  /** 二开能力中心覆盖文本：非空时整块替换默认渲染（可含 {resources} 占位）。 */
+  overrideBlock?: string,
 ): string | null {
   if (!resources || resources.length === 0) return null;
+  if (overrideBlock) return overrideBlock.replace("{resources}", renderResourceTags(resources));
 
   const telemetryHeaders: Array<[string, string | undefined]> = [
     ["x-conversation-id", telemetryContext.sessionKey],
@@ -158,20 +185,7 @@ export function renderKnowledgeToolsBlock(
       .map(([name, value]) => renderHeader(name, value)),
   ];
 
-  const resourceTags = resources
-    .map((r) => {
-      // `match` 是 code-graph 的锚点判定依据：agent 拿它比对当前工作区的 git
-      // remote，命中才调用。优先用后端下发的 repo_slug；缺失时从 repo_url 降级
-      // 提取 `<org>/.../<repo>`。wiki 无 repo，不渲染该属性。
-      const matchAttr = attr("match", r.repo_slug ?? deriveRepoSlug(r.repo_url));
-      const branchAttr = attr("branch", r.repo_url ? (r.branch ?? "main") : undefined);
-      // wiki 的 summary 是 LLM 依据页面标题生成的内容概述，是 agent 判断"该不该
-      // 查这个 wiki"的唯一线索，必须保留。code-graph 的 summary 只是
-      // "N 个文件、M 个符号节点"一类计数，对调用决策无帮助，不注入。
-      const summaryAttr = r.type === "wiki" ? attr("about", r.summary) : "";
-      return `<knowledge type="${r.type}" id="${r.knowledge_id}"\n  url="${r.service_url}"\n  name="${xmlAttrEscape(r.name)}"${matchAttr}${branchAttr}${summaryAttr} />`;
-    })
-    .join("\n\n");
+  const resourceTags = renderResourceTags(resources);
 
   return [
     "<knowledge_tools>",
@@ -355,7 +369,9 @@ export class KnowledgeToolsInjector implements InjectionHook {
       resources = filterResourcesByCapabilities(resources, assetCapabilities);
       // 注入 prompt 里给 LLM 用的 service-id 也要是 spaceId（LLM 拿它调 KS 的 tools/list|call）。
       const injectionServiceId = spaceId || this.config.coreSkill.serviceId;
-      const content = renderKnowledgeToolsBlock(resources, injectionServiceId, telemetryContext);
+      const override = this.config.capStore?.getCapability("knowledge-tools-injector:block");
+      const overrideBlock = override?.enabled && override.text ? override.text : undefined;
+      const content = renderKnowledgeToolsBlock(resources, injectionServiceId, telemetryContext, overrideBlock);
       if (!content) return [];
       return [{
         type: "text",

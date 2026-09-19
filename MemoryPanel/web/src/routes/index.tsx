@@ -17,6 +17,7 @@ import { ApiKeysPage } from '@/pages/ApiKeysPage';
 import { GuidePage } from '@/pages/GuidePage';
 import { ChannelsPage } from '@/pages/team/ChannelsPage';
 import { SystemConfigPage } from '@/custom/system/SystemConfigPage';
+import { CapabilitiesPage } from '@/custom/capabilities/CapabilitiesPage';
 
 export const routes: RouteObject[] = [
   {
@@ -34,6 +35,7 @@ export const routes: RouteObject[] = [
       { path: 'guide', element: <GuidePage /> },
       { path: 'team/feishu-bots', element: <ChannelsPage /> },
       { path: 'system/system-config', element: <SystemConfigPage /> },
+      { path: 'system/custom-capabilities', element: <CapabilitiesPage /> },
     ],
   },
 ];

@@ -36,12 +36,15 @@ import {
   type ListingResult,
 } from "../../skill/core-client.js";
 import type { CoreSkillConfig } from "../../types.js";
+import type { CapabilityStore } from "../../custom/capability-store.js";
 
 const TAG = "[skill-injector]";
 
 export interface SkillInjectorConfig {
   /** Core skill client config; passed to `getCoreSkillClient(config)`. */
   coreSkill: CoreSkillConfig;
+  /** 二开能力中心话术覆盖（可选）；命中则覆盖 header/footer 文案。 */
+  capStore?: CapabilityStore;
 }
 
 /**
@@ -90,9 +93,13 @@ const SKILL_LISTING_FOOTER =
  *   3. `<available_skills>` listing (verbatim from core).
  *   4. SKILL_LISTING_FOOTER — "only skip if genuinely nothing matches".
  */
-export function wrapAvailableSkillsBlock(listing: string): string {
+export function wrapAvailableSkillsBlock(
+  listing: string,
+  /** 二开能力中心覆盖（可选）：header/footer 各自可替换默认文案。 */
+  overrides?: { header?: string; footer?: string },
+): string {
   return [
-    SKILL_LISTING_HEADER,
+    overrides?.header ?? SKILL_LISTING_HEADER,
     "以下是你（当前 agent）自带的云端 skill 列表。这些 skill 存储在你的 agent 名下，",
     "优先使用它们完成任务。如果你觉得自带的 skill 不够，可以用 skill_search 工具",
     "在团队的 skill 库中检索更多（跨 agent 共享）。",
@@ -100,7 +107,7 @@ export function wrapAvailableSkillsBlock(listing: string): string {
     "**重要：这些 skill 存储在云端，不能使用 read_file / tool_use 直接访问，\n必须用 Bash 执行 curl 调用上方 <skill_tools> 块中的 skill-bridge 工具。**",
     "",
     listing,
-    SKILL_LISTING_FOOTER,
+    overrides?.footer ?? SKILL_LISTING_FOOTER,
   ].join("\n");
 }
 
@@ -285,7 +292,12 @@ export class SkillInjector implements InjectionHook {
     const listing = result.listing;
     if (!listing || listing.includes("(none)")) return [];
 
-    const content = wrapAvailableSkillsBlock(listing);
+    const header = this.config.capStore?.getCapability("skill-injector:header");
+    const footer = this.config.capStore?.getCapability("skill-injector:footer");
+    const content = wrapAvailableSkillsBlock(listing, {
+      header: header?.enabled && header.text ? header.text : undefined,
+      footer: footer?.enabled && footer.text ? footer.text : undefined,
+    });
     return [{
       type: "text",
       content,

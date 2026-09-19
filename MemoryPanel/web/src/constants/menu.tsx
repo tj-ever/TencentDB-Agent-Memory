@@ -27,7 +27,8 @@ export type PageId =
   | 'team_agents'
   | 'api_keys'
   | 'feishu_bots'
-  | 'system_config';
+  | 'system_config'
+  | 'custom_capabilities';
 
 /** 页面元数据 */
 export interface PageMeta {
@@ -56,6 +57,7 @@ export function usePageMeta(): Record<PageId, PageMeta> {
     api_keys:        { id: 'api_keys',        label: t('menu.api_keys'), desc: t('menu.desc.api_keys'), group: t('menu.group.organization'), order: 2 },
     feishu_bots:     { id: 'feishu_bots',     label: t('menu.feishu_bots'), desc: t('menu.desc.feishu_bots'), group: t('menu.group.organization'), order: 3 },
     system_config:   { id: 'system_config',   label: t('menu.system_config'), desc: t('menu.desc.system_config'), group: t('menu.group.system'), order: 0 },
+    custom_capabilities: { id: 'custom_capabilities', label: t('menu.custom_capabilities'), desc: t('menu.desc.custom_capabilities'), group: t('menu.group.system'), order: 1 },
   };
 }
 
@@ -74,6 +76,7 @@ export const ITEM_ICON: Record<PageId, JSX.Element> = {
   chat_memory: <ChatIcon size={16} />,
   feishu_bots: <ChatIcon size={16} />,
   system_config: <SettingIcon size={16} />,
+  custom_capabilities: <SettingIcon size={16} />,
 };
 
 /** 分组图标（工作台 / 组织与权限 / 资产管理） */

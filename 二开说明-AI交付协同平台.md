@@ -230,7 +230,7 @@ cp .env.example .env
 | 目录 | 内容 |
 | --- | --- |
 | `MemoryBridge/` | 整个子项目（通用交付/原型/质量基线在 `src/claudeRunner.ts` 的 `defaultRules()`） |
-| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`、`trustedPreset()`）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、测试 |
+| `MemoryProxy/src/custom/` | 上游路由解析（upstream.ts，含 `earlyAuth()`、`trustedPreset()`）、服务端 binding 直通（session-preset.ts）、请求体处理（request-body.ts）、`/v3/config/upstream` 路由（routes/upstream-config.ts）、二开能力中心话术配置（capability-store.ts / capability-defs.ts / routes/custom-capabilities.ts，写时清 hook_cache 生效）、测试 |
 | `MemoryPanel/src/panel/custom/` | 面板反代 Bridge 的 channels 路由、Proxy 上游配置路由、统一注册点 index.ts |
 | `MemoryPanel/web/src/custom/` | 前端机器人管理 API、会话管理组件、系统配置页 |
 | `MemoryPanel/web/src/pages/team/ChannelsPage/` | 机器人管理页面 |

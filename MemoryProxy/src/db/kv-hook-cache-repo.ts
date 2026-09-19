@@ -126,4 +126,17 @@ export class KvHookCacheRepo implements HookCacheRepo {
       .delPrefix(hookDir(spaceId, userId, agentSource, sessionId))
       .catch(() => { /* silent */ });
   }
+
+  /**
+   * ProxyStorage（COS/FS/SQLite-KV）无"全量枚举 + 按子串删"接口，
+   * clearAll 为 no-op。SQLite/Redis 后端均有完整实现。
+   * ponytail: 主部署走 SQLite/Redis，Kv(P4-COS 迁移) 是备选后端，故先 no-op；
+   * 若需支持，须在 ProxyStorage 增加 listAll() 后按含 `inj-hook/` 的 key 逐个 del。
+   */
+  async clearAll(): Promise<void> {
+    console.warn(
+      "[kv-hook-cache] clearAll is a no-op on the ProxyStorage backend; " +
+      "capability talk-block overrides may serve stale cache until the next session init.",
+    );
+  }
 }

@@ -1,6 +1,7 @@
 import { createBridgeServer } from './http.js';
 import { startEnabled } from './runtime.js';
 import { ensureBotMcp } from './mcpPersist.js';
+import { initBridgeConfig } from './bridgeConfig.js';
 
 const PORT = Number(process.env.BRIDGE_PORT || 8130);
 const HOST = process.env.BRIDGE_HOST || '0.0.0.0';
@@ -17,6 +18,9 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err.message);
 });
+
+// 二开能力中心桥接行为覆盖：启动即加载（无文件 → 空配置 → runtime 走代码默认）。
+initBridgeConfig(process.env.BRIDGE_CONFIG_PATH);
 
 const server = createBridgeServer();
 server.listen(PORT, HOST, async () => {
