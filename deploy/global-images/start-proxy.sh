@@ -78,19 +78,25 @@ fi
 bool() { [[ "$1" == "1" ]] && echo "true" || echo "false"; }
 
 info "生成 proxy config → $CONFIG_FILE  (auth=$(bool $PROXY_ENABLE_AUTH) session-init=$(bool $PROXY_ENABLE_SESSION_INIT) tdai=$(bool $PROXY_ENABLE_TDAI))"
+# 上游唯一事实来源 = 面板右上角设置 → proxy 落盘 config.override.yaml。
+# .env 不再提供默认上游：有 PROXY_UPSTREAM_URL 才写底档（仅首次初始化兜底），否则整段省略。
+UPSTREAM_BLOCK=""
+if [[ -n "${PROXY_UPSTREAM_URL:-}" ]]; then
+  UPSTREAM_BLOCK="upstream:
+  url: \"${PROXY_UPSTREAM_URL}\"
+  apiKey: \"${PROXY_UPSTREAM_API_KEY}\"
+  model: \"${PROXY_UPSTREAM_MODEL}\"
+"
+fi
 cat > "$CONFIG_FILE" <<YAML
 # 由 start-proxy.sh 自动生成 —— 每次启动覆盖，请不要手动改。
+# 上游配置在面板右上角设置里改（写入 config.override.yaml）。
 server:
   host: 0.0.0.0
   port: 8096
   forwardTimeoutMs: 600000
 
-upstream:
-  url: "${PROXY_UPSTREAM_URL}"
-  apiKey: "${PROXY_UPSTREAM_API_KEY}"
-  model: "${PROXY_UPSTREAM_MODEL}"
-
-# 内部服务账号：命中 systemUsers 的请求走 passthrough（免路径身份、免注入）。
+${UPSTREAM_BLOCK}# 内部服务账号：命中 systemUsers 的请求走 passthrough（免路径身份、免注入）。
 # knowledge 用户的 userId 固定为 knowledge-service，Proxy 按 auth/verify 解析出的
 # user_id 匹配该账号。
 systemUsers:
