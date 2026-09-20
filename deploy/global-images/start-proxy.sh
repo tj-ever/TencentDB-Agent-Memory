@@ -18,9 +18,9 @@ source "$SCRIPT_DIR/_lib.sh"
 
 load_env
 PROXY_VOLUME="${PROXY_VOLUME:-tdai-memory-proxy-data}"
-require_vars \
-  PROXY_IMAGE PROXY_PORT PROXY_VOLUME \
-  PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL
+# 上游三件套不再必填：运行时上游以面板右上角设置写入的 config.override.yaml 为准，
+# .env 的 PROXY_UPSTREAM_* 仅作首次初始化兜底（未配置 → 底档不含 upstream 段）。
+require_vars PROXY_IMAGE PROXY_PORT PROXY_VOLUME
 
 # 与 memory-core 保持一致的 gateway 内部凭据（默认 local，仅本地体验）
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY:-local}"
